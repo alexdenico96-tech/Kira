@@ -1,0 +1,190 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --c-ink: 6 11 24;        /* #060B18 */
+  --c-panel: 13 23 41;     /* #0D1729 */
+  --c-panel2: 20 33 64;    /* #142140 */
+  --c-line: 33 50 88;      /* #213258 */
+  --c-neon: 63 169 255;    /* #3FA9FF */
+  --c-neon2: 124 92 255;   /* #7C5CFF */
+  --c-teal: 63 167 150;    /* #3FA796 */
+  --c-coral: 255 92 122;   /* #FF5C7A */
+  --c-mist: 143 163 200;   /* #8FA3C8 */
+  --c-paper: 234 242 255;  /* #EAF2FF */
+}
+
+[data-theme="light"] {
+  --c-ink: 245 247 251;    /* #F5F7FB */
+  --c-panel: 255 255 255;  /* #FFFFFF */
+  --c-panel2: 238 241 247; /* #EEF1F7 */
+  --c-line: 216 222 234;   /* #D8DEEA */
+  --c-neon: 37 99 235;     /* #2563EB */
+  --c-neon2: 124 58 237;   /* #7C3AED */
+  --c-teal: 13 148 136;    /* #0D9488 */
+  --c-coral: 220 38 38;    /* #DC2626 */
+  --c-mist: 100 116 139;   /* #64748B */
+  --c-paper: 15 23 42;     /* #0F172A */
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: rgb(var(--c-ink));
+  background-image:
+    radial-gradient(900px 600px at 20% 0%, rgb(var(--c-neon2) / 20%), transparent 60%),
+    radial-gradient(1000px 700px at 85% 100%, rgb(var(--c-neon) / 22%), transparent 60%);
+  background-attachment: fixed;
+  color: rgb(var(--c-paper));
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+[data-theme="light"] body {
+  background-image:
+    radial-gradient(900px 600px at 20% 0%, rgb(var(--c-neon2) / 6%), transparent 60%),
+    radial-gradient(1000px 700px at 85% 100%, rgb(var(--c-neon) / 7%), transparent 60%);
+}
+
+::selection {
+  background: rgb(var(--c-neon) / 35%);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--c-line)) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgb(var(--c-line)); border-radius: 8px; }
+
+:focus-visible {
+  outline: 2px solid rgb(var(--c-neon));
+  outline-offset: 2px;
+}
+
+/* Campos de texto já mostram foco pela borda do próprio contêiner (pílula, input de login etc.),
+   então o contorno retangular padrão do navegador fica sobrando aqui. */
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------- Markdown content ---------- */
+
+.markdown-body > *:first-child { margin-top: 0; }
+.markdown-body > *:last-child { margin-bottom: 0; }
+
+.markdown-body p { margin: 0.6em 0; }
+
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  font-family: 'Cabinet Grotesk', Satoshi, sans-serif;
+  font-weight: 600;
+  color: rgb(var(--c-paper));
+  margin: 1.1em 0 0.5em;
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: 1.35em; }
+.markdown-body h2 { font-size: 1.18em; }
+.markdown-body h3 { font-size: 1.05em; }
+
+.markdown-body strong { color: rgb(var(--c-paper)); font-weight: 700; }
+
+.markdown-body ul, .markdown-body ol {
+  margin: 0.5em 0;
+  padding-left: 1.3em;
+}
+.markdown-body li { margin: 0.25em 0; }
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+
+.markdown-body a { color: rgb(var(--c-neon)); text-decoration: underline; text-underline-offset: 2px; }
+
+.markdown-body blockquote {
+  border-left: 3px solid rgb(var(--c-neon));
+  padding-left: 0.9em;
+  margin: 0.7em 0;
+  color: rgb(var(--c-mist));
+}
+
+.markdown-body hr {
+  border: none;
+  border-top: 1px solid rgb(var(--c-line));
+  margin: 1.2em 0;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.8em 0;
+  font-size: 0.92em;
+  overflow-x: auto;
+  display: block;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid rgb(var(--c-line));
+  padding: 0.5em 0.75em;
+  text-align: left;
+}
+.markdown-body th {
+  background: rgb(var(--c-panel2));
+  color: rgb(var(--c-paper));
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.markdown-body tr:nth-child(even) td { background: rgb(var(--c-panel2) / 35%); }
+
+.markdown-body code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.88em;
+  background: rgb(var(--c-panel2));
+  border: 1px solid rgb(var(--c-line));
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+  color: rgb(var(--c-neon));
+}
+
+.markdown-body pre {
+  background: rgb(var(--c-panel2) / 60%);
+  border: 1px solid rgb(var(--c-line));
+  border-radius: 10px;
+  padding: 0.9em 1em;
+  overflow-x: auto;
+  margin: 0.8em 0;
+}
+.markdown-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgb(var(--c-paper));
+  font-size: 0.85em;
+  line-height: 1.55;
+}
+
+/* paleta mínima de destaque de sintaxe, acompanha o tema */
+.hljs-keyword, .hljs-selector-tag, .hljs-literal { color: rgb(var(--c-neon2)); }
+.hljs-string, .hljs-attr { color: rgb(var(--c-teal)); }
+.hljs-comment { color: rgb(var(--c-mist)); font-style: italic; }
+.hljs-number, .hljs-built_in { color: rgb(var(--c-neon)); }
+.hljs-title, .hljs-function_ { color: rgb(var(--c-neon)); }
+
+/* ---------- Floating hero title ---------- */
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.float-slow {
+  animation: float 4.5s ease-in-out infinite;
+}
