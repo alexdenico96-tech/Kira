@@ -25,7 +25,6 @@ self.addEventListener("fetch", (event) => {
   if (request.method !== "GET") return;
 
   const url = new URL(request.url);
-  // Nunca cachear chamadas de API — precisam ser sempre dinâmicas e autenticadas.
   if (url.pathname.startsWith("/api/")) return;
 
   event.respondWith(

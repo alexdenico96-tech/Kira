@@ -1,8 +1,5 @@
-import dotenv from "dotenv";
 import pg from "pg";
 import { randomUUID } from "crypto";
-
-dotenv.config();
 
 const { Pool } = pg;
 
@@ -16,7 +13,6 @@ const isLocalDb = /localhost|127\.0\.0\.1/.test(process.env.DATABASE_URL || "");
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  // Bancos gerenciados (Neon, Supabase etc.) exigem SSL; um Postgres local geralmente não.
   ssl: isLocalDb ? false : { rejectUnauthorized: false }
 });
 
@@ -62,10 +58,9 @@ export async function initStore() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
   `);
-  // Migração segura para bancos que já tinham a tabela messages antes destas colunas existirem.
+  // Migrações seguras para bancos que já tinham as tabelas antes destas colunas existirem.
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS image_url TEXT;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS had_attachment BOOLEAN NOT NULL DEFAULT false;`);
-  // Migração segura para bancos que já tinham a tabela users antes de e-mail/verificação existirem.
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_token TEXT;`);
@@ -82,10 +77,7 @@ export async function initStore() {
 const USER_FIELDS = `id, username, email, email_verified AS "emailVerified", password_hash AS "passwordHash"`;
 
 export async function findUserByUsername(username) {
-  const { rows } = await pool.query(
-    `SELECT ${USER_FIELDS} FROM users WHERE lower(username) = lower($1)`,
-    [username]
-  );
+  const { rows } = await pool.query(`SELECT ${USER_FIELDS} FROM users WHERE lower(username) = lower($1)`, [username]);
   return rows[0] || null;
 }
 
@@ -123,18 +115,12 @@ export async function setVerifyToken(userId, token, expires) {
 }
 
 export async function findUserByVerifyToken(token) {
-  const { rows } = await pool.query(
-    `SELECT ${USER_FIELDS}, verify_expires AS "verifyExpires" FROM users WHERE verify_token = $1`,
-    [token]
-  );
+  const { rows } = await pool.query(`SELECT ${USER_FIELDS}, verify_expires AS "verifyExpires" FROM users WHERE verify_token = $1`, [token]);
   return rows[0] || null;
 }
 
 export async function markEmailVerified(userId) {
-  await pool.query(
-    `UPDATE users SET email_verified = true, verify_token = NULL, verify_expires = NULL WHERE id = $1`,
-    [userId]
-  );
+  await pool.query(`UPDATE users SET email_verified = true, verify_token = NULL, verify_expires = NULL WHERE id = $1`, [userId]);
 }
 
 export async function setResetToken(userId, token, expires) {
@@ -142,35 +128,26 @@ export async function setResetToken(userId, token, expires) {
 }
 
 export async function findUserByResetToken(token) {
-  const { rows } = await pool.query(
-    `SELECT ${USER_FIELDS}, reset_expires AS "resetExpires" FROM users WHERE reset_token = $1`,
-    [token]
-  );
+  const { rows } = await pool.query(`SELECT ${USER_FIELDS}, reset_expires AS "resetExpires" FROM users WHERE reset_token = $1`, [token]);
   return rows[0] || null;
 }
 
 export async function updatePassword(userId, passwordHash) {
-  await pool.query(`UPDATE users SET password_hash = $2, reset_token = NULL, reset_expires = NULL WHERE id = $1`, [
-    userId,
-    passwordHash
-  ]);
+  await pool.query(`UPDATE users SET password_hash = $2, reset_token = NULL, reset_expires = NULL WHERE id = $1`, [userId, passwordHash]);
 }
 
-// ---------- Conversations (isoladas por user_id no próprio banco) ----------
+// ---------- Conversations ----------
 
 export async function listConversations(userId) {
-  const { rows } = await pool.query(
-    `SELECT id, title, created_at AS "createdAt" FROM conversations WHERE user_id = $1 ORDER BY created_at DESC`,
-    [userId]
-  );
+  const { rows } = await pool.query(`SELECT id, title, created_at AS "createdAt" FROM conversations WHERE user_id = $1 ORDER BY created_at DESC`, [userId]);
   return rows;
 }
 
 export async function getConversation(userId, conversationId) {
-  const { rows: convRows } = await pool.query(
-    `SELECT id, title, created_at AS "createdAt" FROM conversations WHERE id = $1 AND user_id = $2`,
-    [conversationId, userId]
-  );
+  const { rows: convRows } = await pool.query(`SELECT id, title, created_at AS "createdAt" FROM conversations WHERE id = $1 AND user_id = $2`, [
+    conversationId,
+    userId
+  ]);
   if (!convRows[0]) return null;
 
   const { rows: messages } = await pool.query(
@@ -199,10 +176,7 @@ export async function createConversation(userId, title) {
 }
 
 export async function appendMessages(userId, conversationId, newMessages) {
-  const { rows } = await pool.query(`SELECT id FROM conversations WHERE id = $1 AND user_id = $2`, [
-    conversationId,
-    userId
-  ]);
+  const { rows } = await pool.query(`SELECT id FROM conversations WHERE id = $1 AND user_id = $2`, [conversationId, userId]);
   if (!rows[0]) throw new Error("Conversa não encontrada.");
 
   for (const m of newMessages) {
@@ -236,9 +210,5 @@ export async function deleteAllConversations(userId) {
 // ---------- Feedback ----------
 
 export async function createFeedback(userId, username, message) {
-  await pool.query(`INSERT INTO feedback (user_id, username, message) VALUES ($1, $2, $3)`, [
-    userId,
-    username,
-    message
-  ]);
+  await pool.query(`INSERT INTO feedback (user_id, username, message) VALUES ($1, $2, $3)`, [userId, username, message]);
 }

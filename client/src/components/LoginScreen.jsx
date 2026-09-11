@@ -2,7 +2,7 @@ import { useState } from "react";
 import { login, register, storeSession, forgotPassword, resetPassword } from "../lib/api.js";
 
 export default function LoginScreen({ onAuthenticated, initialResetToken }) {
-  const [mode, setMode] = useState(initialResetToken ? "reset" : "login"); // login | register | forgot | reset
+  const [mode, setMode] = useState(initialResetToken ? "reset" : "login");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

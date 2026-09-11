@@ -64,8 +64,6 @@ body {
   outline-offset: 2px;
 }
 
-/* Campos de texto já mostram foco pela borda do próprio contêiner (pílula, input de login etc.),
-   então o contorno retangular padrão do navegador fica sobrando aqui. */
 input:focus-visible,
 textarea:focus-visible {
   outline: none;
@@ -78,11 +76,8 @@ textarea:focus-visible {
   }
 }
 
-/* ---------- Markdown content ---------- */
-
 .markdown-body > *:first-child { margin-top: 0; }
 .markdown-body > *:last-child { margin-bottom: 0; }
-
 .markdown-body p { margin: 0.6em 0; }
 
 .markdown-body h1, .markdown-body h2, .markdown-body h3 {
@@ -98,10 +93,7 @@ textarea:focus-visible {
 
 .markdown-body strong { color: rgb(var(--c-paper)); font-weight: 700; }
 
-.markdown-body ul, .markdown-body ol {
-  margin: 0.5em 0;
-  padding-left: 1.3em;
-}
+.markdown-body ul, .markdown-body ol { margin: 0.5em 0; padding-left: 1.3em; }
 .markdown-body li { margin: 0.25em 0; }
 .markdown-body ul { list-style: disc; }
 .markdown-body ol { list-style: decimal; }
@@ -115,11 +107,7 @@ textarea:focus-visible {
   color: rgb(var(--c-mist));
 }
 
-.markdown-body hr {
-  border: none;
-  border-top: 1px solid rgb(var(--c-line));
-  margin: 1.2em 0;
-}
+.markdown-body hr { border: none; border-top: 1px solid rgb(var(--c-line)); margin: 1.2em 0; }
 
 .markdown-body table {
   width: 100%;
@@ -129,11 +117,7 @@ textarea:focus-visible {
   overflow-x: auto;
   display: block;
 }
-.markdown-body th, .markdown-body td {
-  border: 1px solid rgb(var(--c-line));
-  padding: 0.5em 0.75em;
-  text-align: left;
-}
+.markdown-body th, .markdown-body td { border: 1px solid rgb(var(--c-line)); padding: 0.5em 0.75em; text-align: left; }
 .markdown-body th {
   background: rgb(var(--c-panel2));
   color: rgb(var(--c-paper));
@@ -162,29 +146,16 @@ textarea:focus-visible {
   overflow-x: auto;
   margin: 0.8em 0;
 }
-.markdown-body pre code {
-  background: none;
-  border: none;
-  padding: 0;
-  color: rgb(var(--c-paper));
-  font-size: 0.85em;
-  line-height: 1.55;
-}
+.markdown-body pre code { background: none; border: none; padding: 0; color: rgb(var(--c-paper)); font-size: 0.85em; line-height: 1.55; }
 
-/* paleta mínima de destaque de sintaxe, acompanha o tema */
 .hljs-keyword, .hljs-selector-tag, .hljs-literal { color: rgb(var(--c-neon2)); }
 .hljs-string, .hljs-attr { color: rgb(var(--c-teal)); }
 .hljs-comment { color: rgb(var(--c-mist)); font-style: italic; }
 .hljs-number, .hljs-built_in { color: rgb(var(--c-neon)); }
 .hljs-title, .hljs-function_ { color: rgb(var(--c-neon)); }
 
-/* ---------- Floating hero title ---------- */
-
 @keyframes float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-10px); }
 }
-
-.float-slow {
-  animation: float 4.5s ease-in-out infinite;
-}
+.float-slow { animation: float 4.5s ease-in-out infinite; }

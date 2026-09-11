@@ -1,7 +1,20 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Suporta uma chave (GEMINI_API_KEY) ou várias, separadas por vírgula (GEMINI_API_KEYS).
+// Com várias, o app tenta a próxima automaticamente quando uma bate no limite gratuito —
+// só mostra "limite atingido" pro usuário quando TODAS as chaves configuradas falharem.
+function getApiKeys() {
+  const multi = process.env.GEMINI_API_KEYS;
+  if (multi && multi.trim()) {
+    return multi
+      .split(",")
+      .map((k) => k.trim())
+      .filter(Boolean);
+  }
+  return process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : [];
+}
+
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
 
@@ -9,9 +22,6 @@ const HOME_ASSISTANT_URL = process.env.HOME_ASSISTANT_URL;
 const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
 export const HOME_ASSISTANT_ENABLED = Boolean(HOME_ASSISTANT_URL && HOME_ASSISTANT_TOKEN);
 
-// Ferramenta que a Kira pode chamar sozinha quando o usuário pedir uma imagem gerada.
-// A geração em si não usa o Gemini (a cota gratuita dele pra isso está zerada) — usamos
-// a Pollinations.ai (gratuita, sem chave) só para desenhar a imagem a partir do prompt.
 const IMAGE_TOOL = {
   name: "generate_image",
   description:
@@ -29,14 +39,10 @@ const IMAGE_TOOL = {
   }
 };
 
-// Ferramenta opcional de controle de dispositivos via Home Assistant. Só é oferecida à Kira
-// se HOME_ASSISTANT_URL e HOME_ASSISTANT_TOKEN estiverem configurados no .env — sem isso,
-// nem existe na lista de ferramentas, pra Kira nunca "achar" que consegue controlar algo que
-// não está de fato configurado.
 const HOME_ASSISTANT_TOOL = {
   name: "control_device",
   description:
-    "Controla um dispositivo conectado ao Home Assistant (ligar, desligar, executar uma automação/script). Só use quando o usuário pedir claramente para controlar algo físico da casa (luz, tomada, máquina de lavar etc.) e você souber o entity_id correto pelo contexto da conversa.",
+    "Controla um dispositivo conectado ao Home Assistant (ligar, desligar, executar uma automação/script). Só use quando o usuário pedir claramente para controlar algo físico da casa e você souber o entity_id pelo contexto da conversa.",
   parameters: {
     type: "OBJECT",
     properties: {
@@ -58,8 +64,8 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestGemini({ systemInstruction, contents }) {
-  const res = await fetch(`${GEMINI_URL}?key=${GEMINI_API_KEY}`, {
+async function requestGemini({ systemInstruction, contents, apiKey }) {
+  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -87,21 +93,13 @@ async function requestGemini({ systemInstruction, contents }) {
   return res.json();
 }
 
-// O Gemini às vezes devolve 503 UNAVAILABLE ("alta demanda") — geralmente passa sozinho em
-// poucos segundos. Tenta de novo automaticamente antes de desistir e mostrar erro pro usuário.
-export async function callGemini({ systemInstruction, contents }) {
-  if (!GEMINI_API_KEY) {
-    const err = new Error("GEMINI_API_KEY não configurada.");
-    err.code = "missing_key";
-    throw err;
-  }
-
-  const delays = [800, 2000]; // até 2 tentativas extras, com espera curta crescente
+// Tenta uma chave com retry curto para sobrecarga temporária (503) do próprio Google.
+async function requestWithOverloadRetry({ systemInstruction, contents, apiKey }) {
+  const delays = [800, 2000];
   let lastError;
-
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
-      return await requestGemini({ systemInstruction, contents });
+      return await requestGemini({ systemInstruction, contents, apiKey });
     } catch (err) {
       lastError = err;
       const isOverload = err.status === 503 || err.code === "UNAVAILABLE";
@@ -109,12 +107,39 @@ export async function callGemini({ systemInstruction, contents }) {
       await sleep(delays[attempt]);
     }
   }
+  throw lastError;
+}
+
+// Índice global para fazer round-robin entre as chaves: cada chamada começa numa chave
+// diferente da anterior, espalhando o uso em vez de sempre martelar a primeira da lista.
+let keyIndex = 0;
+
+export async function callGemini({ systemInstruction, contents }) {
+  const keys = getApiKeys();
+  if (keys.length === 0) {
+    const err = new Error("GEMINI_API_KEY não configurada.");
+    err.code = "missing_key";
+    throw err;
+  }
+
+  const startIndex = keyIndex;
+  keyIndex = (keyIndex + 1) % keys.length;
+
+  let lastError;
+  for (let i = 0; i < keys.length; i++) {
+    const apiKey = keys[(startIndex + i) % keys.length];
+    try {
+      return await requestWithOverloadRetry({ systemInstruction, contents, apiKey });
+    } catch (err) {
+      lastError = err;
+      const isQuotaOrAuth = err.status === 429 || err.code === "RESOURCE_EXHAUSTED" || err.status === 401 || err.status === 403;
+      if (!isQuotaOrAuth) throw err;
+    }
+  }
 
   throw lastError;
 }
 
-// model=flux dá qualidade bem melhor que o padrão da Pollinations; enhance=true deixa o
-// próprio serviço reescrever/enriquecer o prompt para um resultado mais nítido.
 export function buildPollinationsUrl(prompt) {
   const encoded = encodeURIComponent(prompt).slice(0, 800);
   return `https://image.pollinations.ai/prompt/${encoded}?width=1280&height=1280&model=flux&enhance=true&nologo=true`;
@@ -129,10 +154,7 @@ export async function callHomeAssistant({ domain, service, entity_id }) {
 
   const res = await fetch(`${HOME_ASSISTANT_URL}/api/services/${domain}/${service}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}`
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}` },
     body: JSON.stringify({ entity_id })
   });
 

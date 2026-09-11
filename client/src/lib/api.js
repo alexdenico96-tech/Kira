@@ -37,6 +37,15 @@ async function request(path, { method = "GET", token, body } = {}) {
   return data;
 }
 
+export function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export const register = (username, email, password) =>
   request("/auth/register", { method: "POST", body: { username, email, password } });
 
@@ -59,15 +68,6 @@ export const getConversation = (token, id) => request(`/conversations/${id}`, { 
 export const deleteConversation = (token, id) => request(`/conversations/${id}`, { method: "DELETE", token });
 
 export const deleteAllConversations = (token) => request("/conversations", { method: "DELETE", token });
-
-export function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
 
 export const sendMessage = (token, message, conversationId, { image, audio } = {}) =>
   request("/chat", { method: "POST", token, body: { message, conversationId, image, audio } });

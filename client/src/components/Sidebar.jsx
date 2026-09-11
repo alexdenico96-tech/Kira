@@ -17,8 +17,6 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew, onDe
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // No celular, "recolhida" significa totalmente fora da tela — nenhuma faixa fica
-  // flutuando por cima do chat. No desktop, continua sendo a faixa fina só com ícones.
   if (isMobile && collapsed) {
     return (
       <button
@@ -36,9 +34,7 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew, onDe
 
   return (
     <>
-      {isMobile && (
-        <div className="fixed inset-0 bg-black/50 z-30" onClick={() => setCollapsed(true)} />
-      )}
+      {isMobile && <div className="fixed inset-0 bg-black/50 z-30" onClick={() => setCollapsed(true)} />}
 
       <aside
         className={`${width} ${
@@ -168,11 +164,7 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew, onDe
 
         <div className={`p-3 border-t border-line/70 flex items-center gap-2 shrink-0 ${collapsed && !isMobile ? "justify-center" : "justify-between"}`}>
           {(!collapsed || isMobile) && <span className="text-xs font-body text-mist truncate">{username}</span>}
-          <button
-            onClick={onLogout}
-            title="Sair"
-            className="text-mist hover:text-coral transition-colors shrink-0"
-          >
+          <button onClick={onLogout} title="Sair" className="text-mist hover:text-coral transition-colors shrink-0">
             <LogOut size={16} />
           </button>
         </div>

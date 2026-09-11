@@ -34,7 +34,6 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.use(cors());
-// Limite maior que o padrão (100kb) para caber imagens/áudio em base64 anexados ao chat.
 app.use(express.json({ limit: "20mb" }));
 
 const APP_URL = process.env.APP_URL || "http://localhost:5173";
@@ -80,7 +79,7 @@ app.post("/api/auth/register", async (req, res) => {
 
     const passwordHash = await bcrypt.hash(password, 10);
     const verifyToken = newToken();
-    const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     let user;
     try {
@@ -92,14 +91,9 @@ app.post("/api/auth/register", async (req, res) => {
     }
 
     try {
-      await sendEmail({
-        to: user.email,
-        subject: "Confirme seu e-mail na Kira",
-        html: verificationEmailHtml(APP_URL, verifyToken)
-      });
+      await sendEmail({ to: user.email, subject: "Confirme seu e-mail na Kira", html: verificationEmailHtml(APP_URL, verifyToken) });
     } catch (err) {
       console.error("Falha ao enviar e-mail de verificação:", err.message);
-      // Não falha o cadastro por causa disso — o usuário pode pedir reenvio depois.
     }
 
     const token = signToken(user);
@@ -130,7 +124,6 @@ app.get("/api/me", requireAuth, async (req, res) => {
   res.json({ user: user ? publicUser(user) : req.user });
 });
 
-// Link clicado direto no e-mail — não é uma chamada de API do frontend, é navegação real do navegador.
 app.get("/api/auth/verify", async (req, res) => {
   const { token } = req.query;
   const user = token ? await findUserByVerifyToken(token) : null;
@@ -150,11 +143,7 @@ app.post("/api/auth/resend-verification", requireAuth, async (req, res) => {
     const verifyToken = newToken();
     const verifyExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
     await setVerifyToken(user.id, verifyToken, verifyExpires);
-    await sendEmail({
-      to: user.email,
-      subject: "Confirme seu e-mail na Kira",
-      html: verificationEmailHtml(APP_URL, verifyToken)
-    });
+    await sendEmail({ to: user.email, subject: "Confirme seu e-mail na Kira", html: verificationEmailHtml(APP_URL, verifyToken) });
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -168,19 +157,14 @@ app.post("/api/auth/forgot-password", async (req, res) => {
     const user = email ? await findUserByEmail(email) : null;
     if (user) {
       const resetToken = newToken();
-      const resetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1h
+      const resetExpires = new Date(Date.now() + 60 * 60 * 1000);
       await setResetToken(user.id, resetToken, resetExpires);
       try {
-        await sendEmail({
-          to: user.email,
-          subject: "Redefinir sua senha na Kira",
-          html: resetPasswordEmailHtml(APP_URL, resetToken)
-        });
+        await sendEmail({ to: user.email, subject: "Redefinir sua senha na Kira", html: resetPasswordEmailHtml(APP_URL, resetToken) });
       } catch (err) {
         console.error("Falha ao enviar e-mail de redefinição:", err.message);
       }
     }
-    // Sempre responde sucesso, exista ou não a conta — evita confirmar quais e-mails têm cadastro.
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -207,7 +191,7 @@ app.post("/api/auth/reset-password", async (req, res) => {
   }
 });
 
-// ---------- Conversations (private per user) ----------
+// ---------- Conversations ----------
 
 app.get("/api/conversations", requireAuth, async (req, res) => {
   const conversations = await listConversations(req.user.id);
@@ -250,7 +234,6 @@ app.post("/api/feedback", requireAuth, async (req, res) => {
   }
 });
 
-// Trunca cada mensagem do histórico para evitar prompts enormes.
 function trimHistory(history, { maxMessages = 8, maxCharsPerMessage = 2000 } = {}) {
   return history.slice(-maxMessages).map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
@@ -266,10 +249,10 @@ function friendlyGeminiError(err) {
     return "O Gemini está sobrecarregado no momento (isso é do lado do Google, acontece em picos de uso). Já tentei de novo automaticamente algumas vezes — espere um pouco e tente mandar a mensagem outra vez.";
   }
   if (err.status === 429 || err.code === "RESOURCE_EXHAUSTED") {
-    return "Você atingiu o limite de uso gratuito do Gemini por agora (esse limite é diário e reseta sozinho). Aguarde um pouco e tente de novo.";
+    return "Todas as chaves configuradas atingiram o limite de uso gratuito do Gemini por agora (esse limite é diário e reseta sozinho). Aguarde um pouco e tente de novo, ou adicione mais chaves em GEMINI_API_KEYS.";
   }
   if (err.status === 401 || err.status === 403) {
-    return "A chave da API Gemini foi rejeitada. Confira o valor de GEMINI_API_KEY no arquivo .env do servidor.";
+    return "A chave da API Gemini foi rejeitada. Confira o valor de GEMINI_API_KEY/GEMINI_API_KEYS no arquivo .env do servidor.";
   }
   if (err.status === 404) {
     return "O modelo configurado (GEMINI_MODEL) não existe ou foi descontinuado — isso acontece com frequência do lado do Google. Tente definir GEMINI_MODEL=gemini-flash-latest no .env, ou confira os nomes disponíveis em aistudio.google.com.";
@@ -282,7 +265,6 @@ function friendlyGeminiError(err) {
 app.post("/api/chat", requireAuth, async (req, res) => {
   try {
     const { message, conversationId, image, audio } = req.body;
-    // image/audio (opcionais): { mimeType: "image/png", data: "<base64 sem prefixo data:>" }
 
     if ((!message || typeof message !== "string") && !image && !audio) {
       return res.status(400).json({ error: "Envie uma mensagem, uma imagem ou um áudio." });
@@ -290,14 +272,10 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
     const rl = checkUserRateLimit(req.user.id);
     if (!rl.allowed) {
-      return res.status(429).json({
-        error: `Você atingiu o limite de mensagens por enquanto. Tente de novo em ${rl.resetInMinutes} minuto(s).`
-      });
+      return res.status(429).json({ error: `Você atingiu o limite de mensagens por enquanto. Tente de novo em ${rl.resetInMinutes} minuto(s).` });
     }
     if (!hasDailyBudget()) {
-      return res.status(429).json({
-        error: "O app atingiu o limite diário de uso gratuito da IA (compartilhado entre todos os usuários). Tente novamente amanhã."
-      });
+      return res.status(429).json({ error: "O app atingiu o limite diário de uso gratuito da IA (compartilhado entre todos os usuários). Tente novamente amanhã." });
     }
 
     const textMessage = message || (image ? "Descreva essa imagem." : "Ouça esse áudio e responda.");
@@ -369,12 +347,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/api/health", (_req, res) =>
-  res.json({ ok: true, model: GEMINI_MODEL, homeAssistant: HOME_ASSISTANT_ENABLED })
-);
+app.get("/api/health", (_req, res) => res.json({ ok: true, model: GEMINI_MODEL, homeAssistant: HOME_ASSISTANT_ENABLED }));
 
-// Em produção, o frontend compilado (client/dist) pode ser servido pelo próprio backend,
-// permitindo publicar tudo como um único serviço. Veja o README, seção "Deploy em produção".
 if (process.env.NODE_ENV === "production") {
   const clientDist = path.join(__dirname, "..", "client", "dist");
   app.use(express.static(clientDist));

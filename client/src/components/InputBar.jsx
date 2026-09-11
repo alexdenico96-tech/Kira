@@ -8,8 +8,8 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
 
-  const [pendingImage, setPendingImage] = useState(null); // { base64, mimeType, previewUrl, name }
-  const [pendingAudio, setPendingAudio] = useState(null); // { base64, mimeType, durationLabel }
+  const [pendingImage, setPendingImage] = useState(null);
+  const [pendingAudio, setPendingAudio] = useState(null);
   const [recording, setRecording] = useState(false);
   const [error, setError] = useState(null);
 
@@ -34,12 +34,7 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     }
     setError(null);
     const base64 = await fileToBase64(file);
-    setPendingImage({
-      base64,
-      mimeType: file.type,
-      previewUrl: URL.createObjectURL(file),
-      name: file.name
-    });
+    setPendingImage({ base64, mimeType: file.type, previewUrl: URL.createObjectURL(file), name: file.name });
   }
 
   async function toggleRecording() {

@@ -21,9 +21,7 @@ export default function MessageThread({ messages, loading, loadingLabel }) {
               {m.previewImage && (
                 <img src={m.previewImage} alt="Enviada" className="max-w-[220px] max-h-[220px] rounded-xl border border-line object-cover" />
               )}
-              {m.hadAudio && (
-                <audio src={m.audioPreviewUrl} controls className="h-9 max-w-[220px]" />
-              )}
+              {m.hadAudio && <audio src={m.audioPreviewUrl} controls className="h-9 max-w-[220px]" />}
               {m.content && (
                 <div className="rounded-2xl bg-panel2 border border-line px-4 py-2.5 text-[15px] text-paper font-body whitespace-pre-wrap leading-relaxed">
                   {m.content}
@@ -41,12 +39,7 @@ export default function MessageThread({ messages, loading, loadingLabel }) {
                 <>
                   <Markdown>{m.content}</Markdown>
                   {m.imageUrl && (
-                    <img
-                      src={m.imageUrl}
-                      alt="Gerada pela Kira"
-                      className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line"
-                      loading="lazy"
-                    />
+                    <img src={m.imageUrl} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" />
                   )}
                 </>
               )}

@@ -16,9 +16,7 @@ function AppearanceTab({ theme, setTheme }) {
       <div className="grid grid-cols-2 gap-3">
         <button
           onClick={() => setTheme("dark")}
-          className={`rounded-xl border p-4 text-left transition-colors ${
-            theme === "dark" ? "border-neon bg-panel2" : "border-line hover:border-neon/40"
-          }`}
+          className={`rounded-xl border p-4 text-left transition-colors ${theme === "dark" ? "border-neon bg-panel2" : "border-line hover:border-neon/40"}`}
         >
           <Moon size={18} className="text-neon mb-2" />
           <p className="text-sm font-body font-medium text-paper">Escuro</p>
@@ -26,9 +24,7 @@ function AppearanceTab({ theme, setTheme }) {
         </button>
         <button
           onClick={() => setTheme("light")}
-          className={`rounded-xl border p-4 text-left transition-colors ${
-            theme === "light" ? "border-neon bg-panel2" : "border-line hover:border-neon/40"
-          }`}
+          className={`rounded-xl border p-4 text-left transition-colors ${theme === "light" ? "border-neon bg-panel2" : "border-line hover:border-neon/40"}`}
         >
           <Sun size={18} className="text-neon mb-2" />
           <p className="text-sm font-body font-medium text-paper">Claro</p>
@@ -44,10 +40,10 @@ function HelpTab() {
     { q: "Como converso com a Kira?", a: "Digite sua pergunta na caixa de texto e aperte Enter ou o botão de enviar. Ela responde perguntas, ajuda com ideias e é uma parceira de programação." },
     { q: "Como envio uma imagem?", a: "Clique no ícone de imagem ao lado da caixa de texto, escolha um arquivo, e pergunte o que quiser sobre ela." },
     { q: "Como envio um áudio?", a: "Clique no ícone de microfone para começar a gravar, e clique de novo para parar. O áudio é enviado junto da sua próxima mensagem." },
-    { q: "Como peço uma imagem gerada?", a: "Peça algo como \"gera uma imagem de...\" ou \"desenha...\" — a Kira entende o pedido e gera a imagem sozinha." },
+    { q: "Como peço uma imagem gerada?", a: 'Peça algo como "gera uma imagem de..." ou "desenha..." — a Kira entende o pedido e gera a imagem sozinha.' },
     { q: "Minhas conversas ficam salvas?", a: "Sim, o histórico fica salvo por conta (visível na barra lateral) e só você tem acesso às suas próprias conversas." },
-    { q: "Posso apagar uma conversa?", a: "Passe o mouse sobre ela na barra lateral e clique no ícone de lixeira. Ou use \"Limpar histórico\" para apagar tudo de uma vez." },
-    { q: "Dá pra instalar a Kira como app?", a: "Sim — no Android, use o menu do Chrome e \"Adicionar à tela inicial\". No iPhone, use o botão de compartilhar do Safari e \"Adicionar à Tela de Início\"." }
+    { q: "Posso apagar uma conversa?", a: 'Passe o mouse sobre ela na barra lateral e clique no ícone de lixeira. Ou use "Limpar histórico" para apagar tudo de uma vez.' },
+    { q: "Dá pra instalar a Kira como app?", a: 'Sim — no Android, use o menu do Chrome e "Adicionar à tela inicial". No iPhone, use o botão de compartilhar do Safari e "Adicionar à Tela de Início".' }
   ];
   return (
     <div className="space-y-4">
@@ -72,10 +68,7 @@ function UsageBar({ label, count, max }) {
         </span>
       </div>
       <div className="h-2 rounded-full bg-panel2 border border-line overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all ${pct > 85 ? "bg-coral" : "bg-neon"}`}
-          style={{ width: `${pct}%` }}
-        />
+        <div className={`h-full rounded-full transition-all ${pct > 85 ? "bg-coral" : "bg-neon"}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -99,8 +92,7 @@ function UsageTab({ token }) {
       <UsageBar label="Suas mensagens (últimos 15 min)" count={usage.user.count} max={usage.user.max} />
       <UsageBar label="Uso total do app hoje (todos os usuários)" count={usage.daily.count} max={usage.daily.max} />
       <p className="text-xs font-body text-mist mt-3 leading-relaxed">
-        Esses limites protegem a cota gratuita da IA. O limite pessoal reseta a cada 15 minutos; o limite total do
-        app reseta à meia-noite.
+        Esses limites protegem a cota gratuita da IA. O limite pessoal reseta a cada 15 minutos; o limite total do app reseta à meia-noite.
       </p>
     </div>
   );
@@ -108,7 +100,7 @@ function UsageTab({ token }) {
 
 function FeedbackTab({ token }) {
   const [message, setMessage] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
+  const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
 
   async function submit(e) {
@@ -128,9 +120,7 @@ function FeedbackTab({ token }) {
 
   return (
     <div>
-      <p className="text-sm text-mist font-body mb-3">
-        Achou um bug, tem uma ideia ou quer contar como está sendo usar a Kira? Escreva aqui.
-      </p>
+      <p className="text-sm text-mist font-body mb-3">Achou um bug, tem uma ideia ou quer contar como está sendo usar a Kira? Escreva aqui.</p>
       <form onSubmit={submit} className="space-y-3">
         <textarea
           value={message}

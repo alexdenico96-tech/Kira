@@ -171,13 +171,7 @@ export default function App() {
         username={session.user.username}
       />
 
-      <SettingsModal
-        open={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        theme={theme}
-        setTheme={setTheme}
-        token={session.token}
-      />
+      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} token={session.token} />
 
       <div className="flex-1 flex flex-col min-w-0">
         {banner && (

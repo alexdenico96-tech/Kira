@@ -6,18 +6,13 @@ const EMAIL_FROM = process.env.EMAIL_FROM || "Kira <onboarding@resend.dev>";
 
 export async function sendEmail({ to, subject, html }) {
   if (!RESEND_API_KEY) {
-    // Modo desenvolvimento: sem chave configurada, não envia de verdade — só mostra no
-    // terminal, pra você conseguir testar o fluxo sem precisar configurar e-mail ainda.
     console.warn(`[email] RESEND_API_KEY não configurada. E-mail não enviado.\n  Para: ${to}\n  Assunto: ${subject}\n  Conteúdo:\n${html}`);
     return { skipped: true };
   }
 
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${RESEND_API_KEY}`
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${RESEND_API_KEY}` },
     body: JSON.stringify({ from: EMAIL_FROM, to, subject, html })
   });
 
