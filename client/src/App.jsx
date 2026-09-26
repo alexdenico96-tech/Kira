@@ -8,20 +8,17 @@ import { useTheme } from "./lib/useTheme.js";
 import {
   getStoredSession,
   clearSession,
-  storeSession,
   listConversations,
   getConversation,
   sendMessage,
   deleteConversation,
-  deleteAllConversations,
-  resendVerification,
-  getMe
+  deleteAllConversations
 } from "./lib/api.js";
 
 const SUGGESTIONS = [
   "Me dê 5 ideias de posts para redes sociais sobre produtividade",
   "Gere uma imagem de um astronauta surfando numa onda neon",
-  "Revise esse trecho de código e aponte melhorias"
+  "Cria um documento com o plano técnico de um app de finanças pessoais"
 ];
 
 export default function App() {
@@ -35,31 +32,11 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("pensando…");
   const [error, setError] = useState(null);
-  const [banner, setBanner] = useState(null);
-  const [resetToken, setResetToken] = useState(null);
 
   const started = messages.length > 0;
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("verified") === "1") setBanner({ type: "success", text: "E-mail confirmado com sucesso!" });
-    if (params.get("verifyError") === "1") setBanner({ type: "error", text: "Esse link de confirmação expirou ou é inválido." });
-    if (params.get("resetToken")) setResetToken(params.get("resetToken"));
-    if ([...params.keys()].length > 0) {
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (session) {
-      refreshConversations();
-      getMe(session.token)
-        .then(({ user }) => {
-          storeSession(session.token, user);
-          setSession((s) => ({ ...s, user }));
-        })
-        .catch(() => {});
-    }
+    if (session) refreshConversations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
 
@@ -133,8 +110,7 @@ export default function App() {
       userMessage.audioPreviewUrl = attachments.audioPreviewUrl;
     }
 
-    const nextMessages = [...messages, userMessage];
-    setMessages(nextMessages);
+    setMessages((m) => [...m, userMessage]);
     setInput("");
     setLoading(true);
     setError(null);
@@ -143,7 +119,16 @@ export default function App() {
     try {
       const res = await sendMessage(session.token, value, activeId, { image, audio });
       setActiveId(res.conversationId);
-      setMessages((m) => [...m, { role: "assistant", content: res.reply, imageUrl: res.imageUrl }]);
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: res.reply,
+          imageUrl: res.imageUrl,
+          documentName: res.documentName,
+          documentContent: res.documentContent
+        }
+      ]);
       refreshConversations();
     } catch (e) {
       setError(e.message);
@@ -154,7 +139,7 @@ export default function App() {
   }
 
   if (!session) {
-    return <LoginScreen onAuthenticated={(token, user) => setSession({ token, user })} initialResetToken={resetToken} />;
+    return <LoginScreen onAuthenticated={(token, user) => setSession({ token, user })} />;
   }
 
   return (
@@ -174,36 +159,6 @@ export default function App() {
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} token={session.token} />
 
       <div className="flex-1 flex flex-col min-w-0">
-        {banner && (
-          <div
-            className={`mx-4 mt-3 px-3 py-2 rounded-lg text-xs font-body flex items-center justify-between ${
-              banner.type === "success" ? "bg-teal/10 border border-teal/30 text-teal" : "bg-coral/10 border border-coral/30 text-coral"
-            }`}
-          >
-            <span>{banner.text}</span>
-            <button onClick={() => setBanner(null)} className="opacity-70 hover:opacity-100">
-              ✕
-            </button>
-          </div>
-        )}
-        {session.user.email && !session.user.emailVerified && (
-          <div className="mx-4 mt-3 px-3 py-2 rounded-lg text-xs font-body bg-panel2 border border-line text-mist flex items-center justify-between gap-2">
-            <span>Confirme seu e-mail ({session.user.email}) para garantir acesso total à sua conta.</span>
-            <button
-              onClick={async () => {
-                try {
-                  await resendVerification(session.token);
-                  setBanner({ type: "success", text: "E-mail de confirmação reenviado." });
-                } catch (e) {
-                  setBanner({ type: "error", text: e.message });
-                }
-              }}
-              className="shrink-0 text-neon hover:underline"
-            >
-              Reenviar
-            </button>
-          </div>
-        )}
         {!started ? (
           <main className="flex-1 flex flex-col items-center justify-center px-4 gap-8 -mt-16">
             <h1 className="float-slow font-display font-semibold text-3xl md:text-4xl text-paper text-center tracking-tight">

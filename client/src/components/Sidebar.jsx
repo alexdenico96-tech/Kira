@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { ChevronLeft, ChevronRight, Plus, LogOut, MessageSquare, Trash2, X, Menu, Settings } from "lucide-react";
+import { ChevronLeft, ChevronRight, Plus, LogOut, MessageSquare, Trash2, X, Menu, Settings, Search } from "lucide-react";
 
 export default function Sidebar({ conversations, activeId, onSelect, onNew, onDelete, onClearAll, onLogout, onOpenSettings, username }) {
   const [collapsed, setCollapsed] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
+  const [query, setQuery] = useState("");
 
   useEffect(() => {
     const check = () => {
@@ -31,6 +32,10 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew, onDe
   }
 
   const width = isMobile ? "w-72" : collapsed ? "w-16" : "w-64";
+
+  const filtered = query.trim()
+    ? conversations.filter((c) => (c.title || "").toLowerCase().includes(query.trim().toLowerCase()))
+    : conversations;
 
   return (
     <>
@@ -71,11 +76,33 @@ export default function Sidebar({ conversations, activeId, onSelect, onNew, onDe
           </button>
         </div>
 
+        {(!collapsed || isMobile) && conversations.length > 0 && (
+          <div className="px-3 pb-2 shrink-0">
+            <div className="flex items-center gap-2 rounded-lg bg-panel2 border border-line px-2.5 py-1.5 focus-within:border-neon/50 transition-colors">
+              <Search size={13} className="text-mist shrink-0" />
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Buscar conversas"
+                className="flex-1 min-w-0 bg-transparent outline-none text-xs font-body text-paper placeholder:text-mist/70"
+              />
+              {query && (
+                <button onClick={() => setQuery("")} className="text-mist hover:text-paper shrink-0">
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto overflow-x-hidden px-2 space-y-0.5">
           {(!collapsed || isMobile) && conversations.length === 0 && (
             <p className="text-mist text-xs font-body px-2 py-4 text-center">Suas conversas aparecem aqui.</p>
           )}
-          {conversations.map((c) => (
+          {(!collapsed || isMobile) && conversations.length > 0 && filtered.length === 0 && (
+            <p className="text-mist text-xs font-body px-2 py-4 text-center">Nenhuma conversa encontrada.</p>
+          )}
+          {filtered.map((c) => (
             <div
               key={c.id}
               className={`group w-full flex items-center gap-1 rounded-lg transition-colors ${

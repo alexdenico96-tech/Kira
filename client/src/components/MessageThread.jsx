@@ -1,8 +1,38 @@
 import { useEffect, useRef } from "react";
+import { FileDown } from "lucide-react";
 import Markdown from "./Markdown.jsx";
 
 function Avatar() {
   return <img src="/logo.png" alt="Kira" className="w-7 h-7 shrink-0 rounded-full object-cover mt-0.5" />;
+}
+
+function downloadDocument(name, content) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function DocumentCard({ name, content }) {
+  return (
+    <button
+      onClick={() => downloadDocument(name, content)}
+      className="mt-2 flex items-center gap-3 rounded-xl border border-line bg-panel2 px-4 py-3 hover:border-neon/50 transition-colors text-left"
+    >
+      <div className="w-9 h-9 rounded-lg bg-neon/15 flex items-center justify-center shrink-0">
+        <FileDown size={16} className="text-neon" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-body font-medium text-paper truncate">{name}</p>
+        <p className="text-xs font-mono text-mist">clique para baixar</p>
+      </div>
+    </button>
+  );
 }
 
 export default function MessageThread({ messages, loading, loadingLabel }) {
@@ -41,6 +71,7 @@ export default function MessageThread({ messages, loading, loadingLabel }) {
                   {m.imageUrl && (
                     <img src={m.imageUrl} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" />
                   )}
+                  {m.documentName && m.documentContent && <DocumentCard name={m.documentName} content={m.documentContent} />}
                 </>
               )}
             </div>

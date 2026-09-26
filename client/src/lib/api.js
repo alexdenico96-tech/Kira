@@ -52,12 +52,11 @@ export const register = (username, email, password) =>
 export const login = (username, password) =>
   request("/auth/login", { method: "POST", body: { username, password } });
 
-export const forgotPassword = (email) => request("/auth/forgot-password", { method: "POST", body: { email } });
+export const forgotPassword = (email) =>
+  request("/auth/forgot-password", { method: "POST", body: { email } });
 
 export const resetPassword = (token, newPassword) =>
   request("/auth/reset-password", { method: "POST", body: { token, newPassword } });
-
-export const resendVerification = (token) => request("/auth/resend-verification", { method: "POST", token });
 
 export const getMe = (token) => request("/me", { token });
 
