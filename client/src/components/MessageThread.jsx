@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { FileDown } from "lucide-react";
+import { FileDown, PanelsTopLeft } from "lucide-react";
 import Markdown from "./Markdown.jsx";
 
 function Avatar() {
@@ -35,7 +35,7 @@ function DocumentCard({ name, content }) {
   );
 }
 
-export default function MessageThread({ messages, loading, loadingLabel }) {
+export default function MessageThread({ messages, loading, loadingLabel, onOpenArtifact }) {
   const endRef = useRef(null);
 
   useEffect(() => {
@@ -71,7 +71,22 @@ export default function MessageThread({ messages, loading, loadingLabel }) {
                   {m.imageUrl && (
                     <img src={m.imageUrl} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" />
                   )}
-                  {m.documentName && m.documentContent && <DocumentCard name={m.documentName} content={m.documentContent} />}
+                  {m.artifactFiles?.length ? (
+                    <button
+                      onClick={() => onOpenArtifact?.({ name: m.artifactName || "Artifact", files: m.artifactFiles })}
+                      className="mt-2 flex items-center gap-3 rounded-xl border border-line bg-panel2 px-4 py-3 hover:border-neon/50 transition-colors text-left"
+                    >
+                      <div className="w-9 h-9 rounded-lg bg-neon/15 flex items-center justify-center shrink-0">
+                        <PanelsTopLeft size={16} className="text-neon" />
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-body font-medium text-paper truncate">{m.artifactName || "Artifact"}</p>
+                        <p className="text-xs font-mono text-mist">{m.artifactFiles.length} arquivo(s) · abrir workspace</p>
+                      </div>
+                    </button>
+                  ) : m.documentName && m.documentContent ? (
+                    <DocumentCard name={m.documentName} content={m.documentContent} />
+                  ) : null}
                 </>
               )}
             </div>

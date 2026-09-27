@@ -1,17 +1,9 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-// Suporta uma chave (GEMINI_API_KEY) ou várias, separadas por vírgula (GEMINI_API_KEYS).
-// Com várias, o app tenta a próxima automaticamente quando uma bate no limite gratuito —
-// só mostra "limite atingido" pro usuário quando TODAS as chaves configuradas falharem.
 function getApiKeys() {
   const multi = process.env.GEMINI_API_KEYS;
-  if (multi && multi.trim()) {
-    return multi
-      .split(",")
-      .map((k) => k.trim())
-      .filter(Boolean);
-  }
+  if (multi && multi.trim()) return multi.split(",").map((k) => k.trim()).filter(Boolean);
   return process.env.GEMINI_API_KEY ? [process.env.GEMINI_API_KEY] : [];
 }
 
@@ -24,38 +16,56 @@ export const HOME_ASSISTANT_ENABLED = Boolean(HOME_ASSISTANT_URL && HOME_ASSISTA
 
 const IMAGE_TOOL = {
   name: "generate_image",
+  description: "Gera uma imagem a partir de uma descrição em texto. Use quando o usuário pedir para criar/desenhar/ilustrar algo.",
+  parameters: {
+    type: "OBJECT",
+    properties: { prompt: { type: "STRING", description: "Descrição detalhada da imagem, de preferência em inglês." } },
+    required: ["prompt"]
+  }
+};
+
+const DOCUMENT_TOOL = {
+  name: "create_document",
   description:
-    "Gera uma imagem a partir de uma descrição em texto. Use quando o usuário pedir para criar, gerar, desenhar ou ilustrar algo visualmente.",
+    "Cria um artifact de projeto para download e visualização. Pode conter um ou vários arquivos e subpastas. Use para código, sites, apps, documentos, planos técnicos ou qualquer conteúdo que o usuário queira criar/salvar. Se o pedido exigir vários arquivos, devolva TODOS no mesmo artifact. Respeite a tecnologia pedida pelo usuário; quando ele não especificar, escolha ou sugira uma stack adequada sem trocar silenciosamente a tecnologia de um projeto existente.",
   parameters: {
     type: "OBJECT",
     properties: {
-      prompt: {
-        type: "STRING",
-        description:
-          "Descrição bem detalhada da imagem a gerar (estilo, iluminação, composição, cores) — prefira escrever em inglês para melhor qualidade."
-      }
+      projectName: { type: "STRING", description: "Nome curto do projeto/artifact, ex: landing-page" },
+      files: {
+        type: "ARRAY",
+        description: "Todos os arquivos do artifact. Caminhos podem incluir subpastas, ex: src/App.jsx.",
+        items: {
+          type: "OBJECT",
+          properties: {
+            path: { type: "STRING", description: "Caminho relativo completo do arquivo dentro do projeto." },
+            content: { type: "STRING", description: "Conteúdo completo do arquivo." },
+            language: { type: "STRING", description: "Linguagem/formato para exibição, ex: html, css, javascript, jsx, json, markdown." }
+          },
+          required: ["path", "content"]
+        }
+      },
     },
-    required: ["prompt"]
+    required: ["projectName", "files"]
   }
 };
 
 const HOME_ASSISTANT_TOOL = {
   name: "control_device",
-  description:
-    "Controla um dispositivo conectado ao Home Assistant (ligar, desligar, executar uma automação/script). Só use quando o usuário pedir claramente para controlar algo físico da casa e você souber o entity_id pelo contexto da conversa.",
+  description: "Controla um dispositivo do Home Assistant (ligar/desligar/executar).",
   parameters: {
     type: "OBJECT",
     properties: {
-      domain: { type: "STRING", description: "Domínio do Home Assistant, ex: switch, light, script, automation" },
-      service: { type: "STRING", description: "Serviço a chamar, ex: turn_on, turn_off, toggle" },
-      entity_id: { type: "STRING", description: "ID da entidade no Home Assistant, ex: switch.maquina_de_lavar" }
+      domain: { type: "STRING" },
+      service: { type: "STRING" },
+      entity_id: { type: "STRING" }
     },
     required: ["domain", "service", "entity_id"]
   }
 };
 
 function buildTools() {
-  const functionDeclarations = [IMAGE_TOOL];
+  const functionDeclarations = [IMAGE_TOOL, DOCUMENT_TOOL];
   if (HOME_ASSISTANT_ENABLED) functionDeclarations.push(HOME_ASSISTANT_TOOL);
   return [{ functionDeclarations }];
 }
@@ -64,7 +74,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestGemini({ systemInstruction, contents, apiKey }) {
+async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName }) {
   const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -72,7 +82,12 @@ async function requestGemini({ systemInstruction, contents, apiKey }) {
       systemInstruction: { parts: [{ text: systemInstruction }] },
       contents,
       tools: buildTools(),
-      generationConfig: { temperature: 0.7, maxOutputTokens: 2048 }
+      ...(forceFunctionName ? {
+        toolConfig: {
+          functionCallingConfig: { mode: "ANY", allowedFunctionNames: [forceFunctionName] }
+        }
+      } : {}),
+      generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
     })
   });
 
@@ -82,7 +97,7 @@ async function requestGemini({ systemInstruction, contents, apiKey }) {
     try {
       code = JSON.parse(text)?.error?.status;
     } catch {
-      /* corpo não era JSON */
+      /* não era JSON */
     }
     const error = new Error(text);
     error.status = res.status;
@@ -93,28 +108,11 @@ async function requestGemini({ systemInstruction, contents, apiKey }) {
   return res.json();
 }
 
-// Tenta uma chave com retry curto para sobrecarga temporária (503) do próprio Google.
-async function requestWithOverloadRetry({ systemInstruction, contents, apiKey }) {
-  const delays = [800, 2000];
-  let lastError;
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      return await requestGemini({ systemInstruction, contents, apiKey });
-    } catch (err) {
-      lastError = err;
-      const isOverload = err.status === 503 || err.code === "UNAVAILABLE";
-      if (!isOverload || attempt === delays.length) throw err;
-      await sleep(delays[attempt]);
-    }
-  }
-  throw lastError;
-}
-
-// Índice global para fazer round-robin entre as chaves: cada chamada começa numa chave
-// diferente da anterior, espalhando o uso em vez de sempre martelar a primeira da lista.
 let keyIndex = 0;
 
-export async function callGemini({ systemInstruction, contents }) {
+// Tenta todas as chaves rápido (sem espera entre elas); só faz UMA pausa curta se todas
+// baterem em sobrecarga (503), antes de tentar a rodada inteira de novo.
+export async function callGemini({ systemInstruction, contents, forceFunctionName }) {
   const keys = getApiKeys();
   if (keys.length === 0) {
     const err = new Error("GEMINI_API_KEY não configurada.");
@@ -125,19 +123,35 @@ export async function callGemini({ systemInstruction, contents }) {
   const startIndex = keyIndex;
   keyIndex = (keyIndex + 1) % keys.length;
 
-  let lastError;
-  for (let i = 0; i < keys.length; i++) {
-    const apiKey = keys[(startIndex + i) % keys.length];
-    try {
-      return await requestWithOverloadRetry({ systemInstruction, contents, apiKey });
-    } catch (err) {
-      lastError = err;
-      const isQuotaOrAuth = err.status === 429 || err.code === "RESOURCE_EXHAUSTED" || err.status === 401 || err.status === 403;
-      if (!isQuotaOrAuth) throw err;
+  async function tryAll() {
+    let lastError;
+    let hadOverload = false;
+    for (let i = 0; i < keys.length; i++) {
+      const apiKey = keys[(startIndex + i) % keys.length];
+      try {
+        return await requestGemini({ systemInstruction, contents, apiKey, forceFunctionName });
+      } catch (err) {
+        lastError = err;
+        const isOverload = err.status === 503 || err.code === "UNAVAILABLE";
+        const isQuotaOrAuth = err.status === 429 || err.code === "RESOURCE_EXHAUSTED" || err.status === 401 || err.status === 403;
+        if (isOverload) hadOverload = true;
+        if (!isOverload && !isQuotaOrAuth) throw err;
+      }
     }
+    const err = lastError || new Error("Todas as chaves falharam.");
+    err.hadOverload = hadOverload;
+    throw err;
   }
 
-  throw lastError;
+  try {
+    return await tryAll();
+  } catch (err) {
+    if (err.hadOverload) {
+      await sleep(1200);
+      return tryAll();
+    }
+    throw err;
+  }
 }
 
 export function buildPollinationsUrl(prompt) {
@@ -151,18 +165,12 @@ export async function callHomeAssistant({ domain, service, entity_id }) {
     err.code = "not_configured";
     throw err;
   }
-
   const res = await fetch(`${HOME_ASSISTANT_URL}/api/services/${domain}/${service}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${HOME_ASSISTANT_TOKEN}` },
     body: JSON.stringify({ entity_id })
   });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Home Assistant recusou o comando: ${text}`);
-  }
-
+  if (!res.ok) throw new Error(`Home Assistant recusou o comando: ${await res.text()}`);
   return res.json();
 }
 

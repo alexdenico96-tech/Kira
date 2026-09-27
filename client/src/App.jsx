@@ -4,6 +4,7 @@ import MessageThread from "./components/MessageThread.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SettingsModal from "./components/SettingsModal.jsx";
+import ArtifactWorkspace from "./components/ArtifactWorkspace.jsx";
 import { useTheme } from "./lib/useTheme.js";
 import {
   getStoredSession,
@@ -32,6 +33,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [loadingLabel, setLoadingLabel] = useState("pensando…");
   const [error, setError] = useState(null);
+  const [activeArtifact, setActiveArtifact] = useState(null);
 
   const started = messages.length > 0;
 
@@ -54,6 +56,10 @@ export default function App() {
       const conv = await getConversation(session.token, id);
       setActiveId(conv.id);
       setMessages(conv.messages);
+      const latestArtifactMessage = [...(conv.messages || [])].reverse().find((m) => m.artifactFiles?.length);
+      setActiveArtifact(latestArtifactMessage
+        ? { name: latestArtifactMessage.artifactName || "Artifact", files: latestArtifactMessage.artifactFiles }
+        : null);
     } catch (e) {
       setError(e.message);
     }
@@ -64,6 +70,7 @@ export default function App() {
     setMessages([]);
     setInput("");
     setError(null);
+    setActiveArtifact(null);
   }
 
   async function handleDeleteConversation(id) {
@@ -92,6 +99,7 @@ export default function App() {
     setConversations([]);
     setActiveId(null);
     setMessages([]);
+    setActiveArtifact(null);
   }
 
   async function handleSubmit(text, attachments = {}) {
@@ -126,9 +134,12 @@ export default function App() {
           content: res.reply,
           imageUrl: res.imageUrl,
           documentName: res.documentName,
-          documentContent: res.documentContent
+          documentContent: res.documentContent,
+          artifactName: res.artifactName,
+          artifactFiles: res.artifactFiles
         }
       ]);
+      if (res.artifactFiles?.length) setActiveArtifact({ name: res.artifactName || "Artifact", files: res.artifactFiles });
       refreshConversations();
     } catch (e) {
       setError(e.message);
@@ -158,7 +169,8 @@ export default function App() {
 
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} token={session.token} />
 
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex min-w-0">
+        <div className="flex-1 flex flex-col min-w-0">
         {!started ? (
           <main className="flex-1 flex flex-col items-center justify-center px-4 gap-8 -mt-16">
             <h1 className="float-slow font-display font-semibold text-3xl md:text-4xl text-paper text-center tracking-tight">
@@ -180,13 +192,15 @@ export default function App() {
         ) : (
           <>
             <main className="flex-1 overflow-y-auto px-4">
-              <MessageThread messages={messages} loading={loading} loadingLabel={loadingLabel} />
+              <MessageThread messages={messages} loading={loading} loadingLabel={loadingLabel} onOpenArtifact={setActiveArtifact} />
             </main>
             <footer className="px-4 pb-6 pt-2" style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
               <InputBar value={input} onChange={setInput} onSubmit={handleSubmit} loading={loading} />
             </footer>
           </>
         )}
+        </div>
+        {activeArtifact && <ArtifactWorkspace artifact={activeArtifact} onClose={() => setActiveArtifact(null)} />}
       </div>
     </div>
   );

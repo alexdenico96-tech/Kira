@@ -159,3 +159,11 @@ textarea:focus-visible {
   50% { transform: translateY(-10px); }
 }
 .float-slow { animation: float 4.5s ease-in-out infinite; }
+
+
+/* Artifact workspace: chat à esquerda, código à direita. */
+.artifact-workspace { width: min(52vw, 760px); }
+.artifact-code { margin: 0; background: rgb(var(--c-ink) / 55%); font-family: 'JetBrains Mono', monospace; white-space: pre; tab-size: 2; }
+@media (max-width: 900px) {
+  .artifact-workspace { position: fixed; inset: 0; z-index: 60; width: 100%; }
+}

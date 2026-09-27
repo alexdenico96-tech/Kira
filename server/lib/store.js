@@ -1,5 +1,5 @@
 import pg from "pg";
-import { randomUUID } from "crypto";
+import { randomUUID, randomBytes, createHash } from "crypto";
 
 const { Pool } = pg;
 
@@ -61,24 +61,41 @@ export async function initStore() {
   // Migrações seguras para bancos que já tinham as tabelas antes destas colunas existirem.
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS image_url TEXT;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS had_attachment BOOLEAN NOT NULL DEFAULT false;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS document_name TEXT;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS document_content TEXT;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_name TEXT;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_files JSONB;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_token TEXT;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS verify_expires TIMESTAMPTZ;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT;`);
-  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_expires TIMESTAMPTZ;`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE email IS NOT NULL;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMPTZ;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email)) WHERE email IS NOT NULL;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);`);
 }
 
 // ---------- Users ----------
 
-const USER_FIELDS = `id, username, email, email_verified AS "emailVerified", password_hash AS "passwordHash"`;
+const USER_FIELDS = `id, username, email, password_hash AS "passwordHash"`;
 
 export async function findUserByUsername(username) {
   const { rows } = await pool.query(`SELECT ${USER_FIELDS} FROM users WHERE lower(username) = lower($1)`, [username]);
   return rows[0] || null;
+}
+
+export async function createUser({ username, email, passwordHash }) {
+  try {
+    const id = randomUUID();
+    const { rows } = await pool.query(
+      `INSERT INTO users (id, username, email, password_hash)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, username, email, created_at AS "createdAt"`,
+      [id, username, email, passwordHash]
+    );
+    return { ...rows[0], passwordHash };
+  } catch (err) {
+    if (err.code === "23505") throw new Error(err.constraint === "idx_users_email_lower" ? "EMAIL_TAKEN" : "USERNAME_TAKEN");
+    throw err;
+  }
 }
 
 export async function findUserByEmail(email) {
@@ -86,54 +103,31 @@ export async function findUserByEmail(email) {
   return rows[0] || null;
 }
 
-export async function findUserById(id) {
-  const { rows } = await pool.query(`SELECT ${USER_FIELDS} FROM users WHERE id = $1`, [id]);
+export async function createPasswordResetToken(userId) {
+  const token = randomBytes(32).toString("hex");
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  await pool.query(
+    `UPDATE users SET reset_token_hash = $2, reset_token_expires_at = now() + interval '1 hour' WHERE id = $1`,
+    [userId, tokenHash]
+  );
+  return token;
+}
+
+export async function findUserByValidResetToken(token) {
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const { rows } = await pool.query(
+    `SELECT ${USER_FIELDS} FROM users WHERE reset_token_hash = $1 AND reset_token_expires_at > now()`,
+    [tokenHash]
+  );
   return rows[0] || null;
 }
 
-export async function createUser({ username, email, passwordHash, verifyToken, verifyExpires }) {
-  try {
-    const id = randomUUID();
-    const { rows } = await pool.query(
-      `INSERT INTO users (id, username, email, password_hash, verify_token, verify_expires)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, username, email, email_verified AS "emailVerified", created_at AS "createdAt"`,
-      [id, username, email, passwordHash, verifyToken, verifyExpires]
-    );
-    return { ...rows[0], passwordHash };
-  } catch (err) {
-    if (err.code === "23505") {
-      if (String(err.detail || "").includes("email")) throw new Error("EMAIL_TAKEN");
-      throw new Error("USERNAME_TAKEN");
-    }
-    throw err;
-  }
-}
-
-export async function setVerifyToken(userId, token, expires) {
-  await pool.query(`UPDATE users SET verify_token = $2, verify_expires = $3 WHERE id = $1`, [userId, token, expires]);
-}
-
-export async function findUserByVerifyToken(token) {
-  const { rows } = await pool.query(`SELECT ${USER_FIELDS}, verify_expires AS "verifyExpires" FROM users WHERE verify_token = $1`, [token]);
-  return rows[0] || null;
-}
-
-export async function markEmailVerified(userId) {
-  await pool.query(`UPDATE users SET email_verified = true, verify_token = NULL, verify_expires = NULL WHERE id = $1`, [userId]);
-}
-
-export async function setResetToken(userId, token, expires) {
-  await pool.query(`UPDATE users SET reset_token = $2, reset_expires = $3 WHERE id = $1`, [userId, token, expires]);
-}
-
-export async function findUserByResetToken(token) {
-  const { rows } = await pool.query(`SELECT ${USER_FIELDS}, reset_expires AS "resetExpires" FROM users WHERE reset_token = $1`, [token]);
-  return rows[0] || null;
+export async function clearPasswordResetToken(userId) {
+  await pool.query(`UPDATE users SET reset_token_hash = NULL, reset_token_expires_at = NULL WHERE id = $1`, [userId]);
 }
 
 export async function updatePassword(userId, passwordHash) {
-  await pool.query(`UPDATE users SET password_hash = $2, reset_token = NULL, reset_expires = NULL WHERE id = $1`, [userId, passwordHash]);
+  await pool.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [userId, passwordHash]);
 }
 
 // ---------- Conversations ----------
@@ -157,7 +151,11 @@ export async function getConversation(userId, conversationId) {
             reasoning,
             search_disabled AS "searchDisabled",
             image_url AS "imageUrl",
-            had_attachment AS "hadAttachment"
+            had_attachment AS "hadAttachment",
+            document_name AS "documentName",
+            document_content AS "documentContent",
+            artifact_name AS "artifactName",
+            artifact_files AS "artifactFiles"
      FROM messages WHERE conversation_id = $1 ORDER BY id ASC`,
     [conversationId]
   );
@@ -181,8 +179,8 @@ export async function appendMessages(userId, conversationId, newMessages) {
 
   for (const m of newMessages) {
     await pool.query(
-      `INSERT INTO messages (conversation_id, role, content, searched, search_queries, visited_sites, reasoning, search_disabled, image_url, had_attachment)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      `INSERT INTO messages (conversation_id, role, content, searched, search_queries, visited_sites, reasoning, search_disabled, image_url, had_attachment, document_name, document_content, artifact_name, artifact_files)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         conversationId,
         m.role,
@@ -193,7 +191,11 @@ export async function appendMessages(userId, conversationId, newMessages) {
         m.reasoning || null,
         m.searchDisabled || false,
         m.imageUrl || null,
-        m.hadAttachment || false
+        m.hadAttachment || false,
+        m.documentName || null,
+        m.documentContent || null,
+        m.artifactName || null,
+        m.artifactFiles ? JSON.stringify(m.artifactFiles) : null
       ]
     );
   }
