@@ -68,9 +68,25 @@ export const deleteConversation = (token, id) => request(`/conversations/${id}`,
 
 export const deleteAllConversations = (token) => request("/conversations", { method: "DELETE", token });
 
-export const sendMessage = (token, message, conversationId, { image, audio } = {}) =>
-  request("/chat", { method: "POST", token, body: { message, conversationId, image, audio } });
+export const sendMessage = (token, message, conversationId, { image, audio, artifactId } = {}) =>
+  request("/chat", { method: "POST", token, body: { message, conversationId, image, audio, artifactId } });
+
+export const getArtifact = (token, artifactId, version) =>
+  request(`/artifacts/${artifactId}${version ? `?version=${version}` : ""}`, { token });
+
+export const listArtifactVersions = (token, artifactId) =>
+  request(`/artifacts/${artifactId}/versions`, { token });
+
+export const restoreArtifactVersion = (token, artifactId, version) =>
+  request(`/artifacts/${artifactId}/restore`, { method: "POST", token, body: { version } });
 
 export const getUsage = (token) => request("/usage", { token });
 
 export const sendFeedback = (token, message) => request("/feedback", { method: "POST", token, body: { message } });
+
+export const listProjects = (token) => request("/projects", { token });
+export const generateProjectReadme = (token, id) => request(`/projects/${id}/readme`, { token });
+export const getVersionChanges = (token, id, version) => request(`/projects/${id}/changes/${version}`, { token });
+export const importProjectZip = (token, name, zipBase64) => request("/projects/import-zip", { method:"POST", token, body:{name,zipBase64} });
+export const exportProjectGithub = (token,id,owner,repo,branch="main") => request(`/projects/${id}/github-export`, {method:"POST",token,body:{owner,repo,branch}});
+export const importProjectGithub = (token,owner,repo,branch="main") => request("/projects/github-import", {method:"POST",token,body:{owner,repo,branch}});

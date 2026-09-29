@@ -8,7 +8,10 @@ import { signToken, requireAuth } from "./lib/auth.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
 import { callGemini, buildPollinationsUrl, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
-import { callGroqFallback, callGroqArtifactFallback, GROQ_ENABLED } from "./lib/groq.js";
+import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, GROQ_ENABLED } from "./lib/groq.js";
+import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
+import { routeRequest, estimateChars } from "./lib/modelRouter.js";
+import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, applyFileOperations, generateReadme, readZip } from "./lib/projectUtils.js";
 import {
   initStore,
   findUserByUsername,
@@ -24,7 +27,22 @@ import {
   appendMessages,
   deleteConversation,
   deleteAllConversations,
-  createFeedback
+  createFeedback,
+  createArtifactVersioned,
+  getArtifact,
+  listArtifactVersions,
+  addArtifactVersion,
+  restoreArtifactVersion,
+  updateProjectMetadata,
+  listProjects,
+  findProjectMention,
+  setActiveProject,
+  getActiveProject,
+  getCachedResponse,
+  findRecentCacheCandidates,
+  putCachedResponse,
+  saveVersionWithOperations,
+  getVersionChanges
 } from "./lib/store.js";
 
 dotenv.config();
@@ -34,25 +52,12 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
-const SYSTEM_PROMPT = `Você é Kira, uma assistente de IA conversacional, útil e direta.
-Você ajuda com estes tipos de tarefa:
-1. Conversa geral: responda perguntas, explique conceitos, ajude a resolver problemas.
-2. Ideias: quando pedirem brainstorm, sugestões, planejamento ou criatividade, traga opções concretas e variadas.
-3. Programação: você é parceira de programação. Escreva, revise, depure e explique código, sempre em blocos markdown com a linguagem indicada (ex: \`\`\`javascript).
-4. Imagens e áudio: você entende imagens e áudios enviados. Também pode GERAR uma imagem: chame generate_image com um prompt detalhado (de preferência em inglês) quando pedirem para criar/desenhar algo.
-5. Artifacts e projetos: quando o usuário pedir código, site, app, documento, plano, estrutura de projeto ou algo para criar/baixar/salvar, use create_document. Para projetos com mais de um arquivo, envie TODOS os arquivos juntos no mesmo artifact usando projectName + files. Nunca reduza um pedido de HTML/CSS/JS a apenas HTML. Respeite a tecnologia especificada pelo usuário. Se ele não especificar tecnologia, você pode sugerir ou escolher uma opção adequada e explicar brevemente a escolha; não troque silenciosamente a stack de um projeto existente.
-${HOME_ASSISTANT_ENABLED ? "6. Controle de dispositivos: use control_device para ligar/desligar dispositivos reais via Home Assistant, só quando pedido claramente." : ""}
-
-Responda sempre no mesmo idioma da última mensagem do usuário (português ou espanhol).
-
-Tom de voz: converse de um jeito natural e direto, como uma pessoa competente conversando de verdade — não como um manual. Evite começar respostas com "Claro!" ou "Ótima pergunta!". Vá direto ao ponto. Prefira parágrafos corridos a listas quando uma explicação corrida for mais natural; use listas só quando itens são realmente paralelos entre si. Seja honesta mesmo quando a resposta é "não sei" ou "isso depende".
-
-Regras de formatação (sua resposta é renderizada como Markdown puro):
-- Nunca use tags HTML soltas como <br>, <b>, <div>. Para parágrafo novo, use uma linha em branco.
-- Use tabelas Markdown só quando fizer sentido comparar itens lado a lado.
-- Use ##/### só em respostas longas que se beneficiam de seções.
-
-Se te perguntarem seu nome, diga que se chama Kira.`;
+const SYSTEM_PROMPT = `Você é Kira, assistente direta. Responda no idioma da última mensagem.
+Conversa: responda de forma útil e concisa.
+Código novo: use create_document e entregue os arquivos necessários.
+Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos.
+Imagens: use generate_image quando pedirem geração. Home Assistant: só use control_device quando pedido.
+Preserve a stack de projetos existentes. Markdown puro; sem HTML decorativo.`;
 
 function publicUser(user) {
   return { id: user.id, username: user.username };
@@ -207,11 +212,131 @@ function friendlyGeminiError(err) {
   return "Não consegui falar com a IA agora.";
 }
 
+
+// ---------- Persistent projects / exports ----------
+
+app.get("/api/projects", requireAuth, async (req,res)=>res.json(await listProjects(req.user.id)));
+
+app.get("/api/projects/:id/readme", requireAuth, async (req,res)=>{
+  const p=await getArtifact(req.user.id,req.params.id);
+  if(!p)return res.status(404).json({error:"Projeto não encontrado."});
+  res.json({filename:"README.md",content:generateReadme(p)});
+});
+
+app.get("/api/projects/:id/changes/:version", requireAuth, async (req,res)=>{
+  const v=await getVersionChanges(req.user.id,req.params.id,Number(req.params.version));
+  if(!v)return res.status(404).json({error:"Versão não encontrada."});
+  const changed=new Set([...(v.changeManifest?.created||[]),...(v.changeManifest?.updated||[])]);
+  res.json({summary:v.summary,changeManifest:v.changeManifest,files:(v.files||[]).filter(f=>changed.has(f.path))});
+});
+
+app.post("/api/projects/import-zip", requireAuth, async (req,res)=>{
+  const {name,zipBase64}=req.body||{};
+  if(!zipBase64)return res.status(400).json({error:"ZIP ausente."});
+  const files=readZip(Buffer.from(zipBase64,"base64"));
+  if(!files.length)return res.status(400).json({error:"ZIP sem arquivos de texto válidos."});
+  let conv=await createConversation(req.user.id,`Projeto ${name||"importado"}`);
+  const created=await createArtifactVersioned(req.user.id,conv.id,name||"projeto-importado",files,"Importação ZIP");
+  const meta=inferProjectMetadata(created.name,files); await updateProjectMetadata(req.user.id,created.id,meta); await setActiveProject(req.user.id,conv.id,created.id);
+  res.json({...created,...meta,conversationId:conv.id});
+});
+
+app.post("/api/projects/:id/github-export", requireAuth, async (req,res)=>{
+  if(!process.env.GITHUB_TOKEN)return res.status(400).json({error:"GITHUB_TOKEN não configurado no servidor."});
+  const {owner,repo,branch="main"}=req.body||{}; if(!owner||!repo)return res.status(400).json({error:"owner e repo são obrigatórios."});
+  const p=await getArtifact(req.user.id,req.params.id); if(!p)return res.status(404).json({error:"Projeto não encontrado."});
+  const headers={Authorization:`Bearer ${process.env.GITHUB_TOKEN}`,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
+  for(const f of p.files){
+    const url=`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${f.path.split("/").map(encodeURIComponent).join("/")}`;
+    let sha; const old=await fetch(`${url}?ref=${encodeURIComponent(branch)}`,{headers}); if(old.ok)sha=(await old.json()).sha;
+    const r=await fetch(url,{method:"PUT",headers:{...headers,"Content-Type":"application/json"},body:JSON.stringify({message:`Kira: export ${p.name} v${p.version}`,content:Buffer.from(f.content).toString("base64"),branch,...(sha?{sha}:{})})});
+    if(!r.ok)return res.status(502).json({error:`GitHub recusou ${f.path}: ${await r.text()}`});
+  }
+  res.json({ok:true,files:p.files.length});
+});
+
+app.post("/api/projects/github-import", requireAuth, async (req,res)=>{
+  if(!process.env.GITHUB_TOKEN)return res.status(400).json({error:"GITHUB_TOKEN não configurado no servidor."});
+  const {owner,repo,branch="main"}=req.body||{}; if(!owner||!repo)return res.status(400).json({error:"owner e repo são obrigatórios."});
+  const headers={Authorization:`Bearer ${process.env.GITHUB_TOKEN}`,Accept:"application/vnd.github+json","X-GitHub-Api-Version":"2022-11-28"};
+  const treeRes=await fetch(`https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/git/trees/${encodeURIComponent(branch)}?recursive=1`,{headers});
+  if(!treeRes.ok)return res.status(502).json({error:`GitHub: ${await treeRes.text()}`});
+  const tree=(await treeRes.json()).tree||[]; const files=[];
+  for(const item of tree.filter(x=>x.type==="blob"&&x.size<=300000).slice(0,100)){
+    const r=await fetch(item.url,{headers}); if(!r.ok)continue; const blob=await r.json();
+    try{files.push({path:item.path,content:Buffer.from(blob.content||"","base64").toString("utf8"),language:""});}catch{}
+  }
+  const conv=await createConversation(req.user.id,`GitHub ${repo}`);
+  const created=await createArtifactVersioned(req.user.id,conv.id,repo,files,"Importação GitHub");
+  const meta=inferProjectMetadata(repo,files); await updateProjectMetadata(req.user.id,created.id,meta); await setActiveProject(req.user.id,conv.id,created.id);
+  res.json({...created,...meta,conversationId:conv.id});
+});
+
+// ---------- Artifact versions ----------
+
+function selectRelevantArtifactFiles(files, request, maxFiles = 4) {
+  const all = Array.isArray(files) ? files : [];
+  const q = String(request || "").toLowerCase();
+  const exact = all.filter(f => q.includes(String(f.path).toLowerCase()) || q.includes(String(f.path).split("/").pop().toLowerCase()));
+  if (exact.length) return exact.slice(0, maxFiles);
+
+  const wanted = new Set();
+  const addBy = re => all.filter(f => re.test(f.path.toLowerCase())).forEach(f => wanted.add(f));
+  if (/css|estilo|style|cor|color|fonte|layout|visual|design|hero|bot[aã]o|responsiv/.test(q)) addBy(/\.(css|scss|sass|less)$/);
+  if (/html|texto|conte[uú]do|hero|header|footer|formul[aá]rio|se[cç][aã]o|link/.test(q)) addBy(/\.(html|htm|jsx|tsx|vue|svelte)$/);
+  if (/javascript|js|fun[cç][aã]o|click|evento|valida|l[oó]gica|api|fetch|intera[cç]/.test(q)) addBy(/\.(js|jsx|ts|tsx)$/);
+  if (/react|componente|component/.test(q)) addBy(/\.(jsx|tsx)$/);
+  if (/config|depend[eê]ncia|package/.test(q)) addBy(/(^|\/)package\.json$|\.config\./);
+
+  if (!wanted.size) {
+    for (const f of all) {
+      if (/\.(html|jsx|tsx|vue|svelte)$/.test(f.path.toLowerCase())) wanted.add(f);
+      if (wanted.size >= 2) break;
+    }
+  }
+  return [...wanted].slice(0, maxFiles);
+}
+
+function artifactEditPrompt(artifact, request) {
+  const relevant = selectRelevantArtifactFiles(artifact.files, request);
+  const manifest = artifact.files.map(f => f.path).join("\n");
+  const context = relevant.map(f => `--- ${f.path} ---\n${f.content}`).join("\n\n");
+  return `Projeto existente: ${artifact.name}
+Versão atual: v${artifact.version}
+Pedido do usuário: ${request}
+
+Arquivos do projeto (manifesto; conteúdo não incluído):
+${manifest}
+
+Edite somente o necessário. Abaixo estão os arquivos relevantes disponíveis:
+${context}
+
+Retorne update_artifact com SOMENTE operações necessárias:
+- update: conteúdo COMPLETO do arquivo alterado;
+- create: conteúdo COMPLETO do novo arquivo;
+- delete: somente path.
+Nunca repita arquivos intactos.`;
+}
+
+app.get("/api/artifacts/:id", requireAuth, async (req,res)=>{
+  const artifact=await getArtifact(req.user.id,req.params.id,req.query.version?Number(req.query.version):null);
+  if(!artifact)return res.status(404).json({error:"Artifact não encontrado."});
+  res.json({id:artifact.id,name:artifact.name,version:artifact.version,files:artifact.files,summary:artifact.summary});
+});
+app.get("/api/artifacts/:id/versions", requireAuth, async (req,res)=>{
+  res.json(await listArtifactVersions(req.user.id,req.params.id));
+});
+app.post("/api/artifacts/:id/restore", requireAuth, async (req,res)=>{
+  const artifact=await restoreArtifactVersion(req.user.id,req.params.id,Number(req.body.version));
+  if(!artifact)return res.status(404).json({error:"Artifact ou versão não encontrado."});
+  res.json(artifact);
+});
+
 // ---------- Chat (Kira) ----------
 
 app.post("/api/chat", requireAuth, async (req, res) => {
   try {
-    const { message, conversationId, image, audio } = req.body;
+    const { message, conversationId, image, audio, artifactId } = req.body;
     if ((!message || typeof message !== "string") && !image && !audio) {
       return res.status(400).json({ error: "Envie uma mensagem, uma imagem ou um áudio." });
     }
@@ -233,28 +358,57 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     }
 
     const history = trimHistory(conv.messages);
-    const currentParts = [{ text: textMessage }];
-    if (image?.data) currentParts.push({ inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } });
-    if (audio?.data) currentParts.push({ inlineData: { mimeType: audio.mimeType || "audio/webm", data: audio.data } });
-    const contents = [...history, { role: "user", parts: currentParts }];
-
-    consumeDailyBudget();
-
-    let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles;
-    let usedFallback = false;
+    const active = conv?.id ? await getActiveProject(req.user.id, conv.id) : null;
+    const mentioned = message ? await findProjectMention(req.user.id, message) : null;
+    const resolvedArtifactId = artifactId || mentioned?.id || active?.artifactId || null;
+    const existingArtifact = resolvedArtifactId ? await getArtifact(req.user.id, resolvedArtifactId) : null;
+    const editingArtifact = Boolean(existingArtifact && message && typeof message === "string");
 
     // Quando o usuário pede explicitamente para criar/entregar arquivos ou um projeto,
     // garante que o Gemini devolva um artifact estruturado em vez de apenas Markdown.
     const wantsArtifact = /(?:cria|crie|criar|gera|gere|gerar|faça|fazer|monte|montar|desenvolva|desenvolver|entregue|quero|preciso|arquivo|arquivos|artifact|projeto|site|landing page|html|css|javascript|react|código|codigo)/i.test(textMessage)
       && /(?:arquivo|arquivos|artifact|projeto|site|landing page|html|css|javascript|react|código|codigo|download|baixar|pasta)/i.test(textMessage);
 
+    const currentParts = [{ text: textMessage }];
+    if (image?.data) currentParts.push({ inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } });
+    if (audio?.data) currentParts.push({ inlineData: { mimeType: audio.mimeType || "audio/webm", data: audio.data } });
+    const contents = [...history, { role: "user", parts: currentParts }];
+
+    const route = routeRequest({message:textMessage,image,audio,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
+
+    // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
+    if(route.task==="chat_small" && !image && !audio){
+      const fp=cacheFingerprint(textMessage);
+      let cached=await getCachedResponse(fp);
+      if(!cached){
+        const candidates=await findRecentCacheCandidates(30);
+        const hit=candidates.find(c=>similarity(textMessage,c.normalizedPrompt)>=0.96);
+        if(hit)cached=hit;
+      }
+      if(cached){
+        await appendMessages(req.user.id,conv.id,[{role:"user",content:textMessage},{role:"assistant",content:cached.response}]);
+        return res.json({conversationId:conv.id,title:conv.title,reply:cached.response,cacheHit:true,route});
+      }
+    }
+
+    consumeDailyBudget();
+
+    let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
+    let usedFallback = false;
+
     try {
-      const data = await callGemini({
+      if(route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
+        reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,model:route.providers[0].model,maxTokens:900});
+      }
+      const aiContents = editingArtifact
+        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }] }]
+        : contents;
+      const data = reply ? null : await callGemini({
         systemInstruction: SYSTEM_PROMPT,
-        contents,
-        forceFunctionName: wantsArtifact ? "create_document" : undefined
+        contents: aiContents,
+        forceFunctionName: editingArtifact ? "update_artifact" : (wantsArtifact ? "create_document" : undefined)
       });
-      const candidate = data.candidates?.[0];
+      const candidate = data?.candidates?.[0];
       const parts = candidate?.content?.parts || [];
       const functionCall = parts.find((p) => p.functionCall)?.functionCall;
 
@@ -262,6 +416,14 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         const prompt = functionCall.args?.prompt || textMessage;
         imageUrl = buildPollinationsUrl(prompt);
         reply = `Aqui está a imagem que você pediu:\n\n*"${prompt}"*`;
+            } else if (functionCall?.name === "update_artifact" && editingArtifact) {
+        const args=functionCall.args||{};
+        const changes=Array.isArray(args.changes)?args.changes:[];
+        const applied=applyFileOperations(existingArtifact.files,changes);
+        if(!applied.manifest.created.length&&!applied.manifest.updated.length&&!applied.manifest.deleted.length) throw new Error("Nenhuma alteração válida retornada.");
+        const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,applied.files,args.summary||textMessage.slice(0,160),applied.manifest);
+        artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
+        reply=`Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
       } else if (functionCall?.name === "create_document") {
         const args = functionCall.args || {};
         if (Array.isArray(args.files) && args.files.length > 0) {
@@ -287,13 +449,19 @@ app.post("/api/chat", requireAuth, async (req, res) => {
           reply = `Não consegui executar esse comando no Home Assistant: ${err.message}`;
         }
       } else {
-        reply = parts.map((p) => p.text).filter(Boolean).join("\n").trim() || "Não consegui gerar uma resposta agora.";
+        reply = reply || parts.map((p) => p.text).filter(Boolean).join("\n").trim() || "Não consegui gerar uma resposta agora.";
       }
     } catch (err) {
       console.error(`[chat] Gemini falhou (status ${err.status}, code ${err.code}):`, err.message);
       if (GROQ_ENABLED) {
         try {
-          if (wantsArtifact) {
+          if (editingArtifact) {
+            const patch = await callGroqArtifactUpdateFallback({ systemInstruction: SYSTEM_PROMPT, message: artifactEditPrompt(existingArtifact, textMessage) });
+            const applied=applyFileOperations(existingArtifact.files,patch.changes);
+            const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,applied.files,patch.summary,applied.manifest);
+            artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
+            reply = `Atualizei **${artifactName}** para a **v${artifactVersion}** (${updated.changedFiles.join(", ")}).`;
+          } else if (wantsArtifact) {
             const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage });
             artifactName = artifact.projectName;
             artifactFiles = artifact.files;
@@ -317,14 +485,27 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
     }
 
+    if (artifactFiles?.length && !responseArtifactId) {
+      const createdArtifact = await createArtifactVersioned(req.user.id, conv.id, artifactName || "Artifact", artifactFiles, "Criação inicial");
+      responseArtifactId = createdArtifact.id;
+      artifactVersion = createdArtifact.version;
+      const meta=inferProjectMetadata(createdArtifact.name,createdArtifact.files);
+      await updateProjectMetadata(req.user.id,createdArtifact.id,meta);
+      await setActiveProject(req.user.id,conv.id,createdArtifact.id);
+    }
+
+    if(responseArtifactId) await setActiveProject(req.user.id,conv.id,responseArtifactId);
     const hadAttachment = Boolean(image?.data || audio?.data);
 
     await appendMessages(req.user.id, conv.id, [
       { role: "user", content: textMessage, hadAttachment },
-      { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles }
+      { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion }
     ]);
 
-    res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, usedFallback });
+    if(route.task==="chat_small" && reply && !artifactFiles?.length && !image && !audio){
+      await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
+    }
+    res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro interno no servidor.", details: String(err) });

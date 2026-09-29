@@ -56,10 +56,13 @@ export default function App() {
       const conv = await getConversation(session.token, id);
       setActiveId(conv.id);
       setMessages(conv.messages);
-      const latestArtifactMessage = [...(conv.messages || [])].reverse().find((m) => m.artifactFiles?.length);
-      setActiveArtifact(latestArtifactMessage
-        ? { name: latestArtifactMessage.artifactName || "Artifact", files: latestArtifactMessage.artifactFiles }
-        : null);
+      const latest = [...(conv.messages || [])].reverse().find((m) => m.artifactFiles?.length);
+      setActiveArtifact(latest ? {
+        id: latest.artifactId || null,
+        version: latest.artifactVersion || 1,
+        name: latest.artifactName || "Artifact",
+        files: latest.artifactFiles
+      } : null);
     } catch (e) {
       setError(e.message);
     }
@@ -99,7 +102,6 @@ export default function App() {
     setConversations([]);
     setActiveId(null);
     setMessages([]);
-    setActiveArtifact(null);
   }
 
   async function handleSubmit(text, attachments = {}) {
@@ -125,7 +127,7 @@ export default function App() {
     setLoadingLabel(image ? "olhando a imagem…" : audio ? "ouvindo o áudio…" : "pensando…");
 
     try {
-      const res = await sendMessage(session.token, value, activeId, { image, audio });
+      const res = await sendMessage(session.token, value, activeId, { image, audio, artifactId: activeArtifact?.id || null });
       setActiveId(res.conversationId);
       setMessages((m) => [
         ...m,
@@ -136,10 +138,12 @@ export default function App() {
           documentName: res.documentName,
           documentContent: res.documentContent,
           artifactName: res.artifactName,
-          artifactFiles: res.artifactFiles
+          artifactFiles: res.artifactFiles,
+          artifactId: res.artifactId,
+          artifactVersion: res.artifactVersion
         }
       ]);
-      if (res.artifactFiles?.length) setActiveArtifact({ name: res.artifactName || "Artifact", files: res.artifactFiles });
+      if (res.artifactFiles?.length) setActiveArtifact({ id: res.artifactId || null, version: res.artifactVersion || 1, name: res.artifactName || "Artifact", files: res.artifactFiles });
       refreshConversations();
     } catch (e) {
       setError(e.message);
@@ -200,7 +204,7 @@ export default function App() {
           </>
         )}
         </div>
-        {activeArtifact && <ArtifactWorkspace artifact={activeArtifact} onClose={() => setActiveArtifact(null)} />}
+        {activeArtifact && <ArtifactWorkspace artifact={activeArtifact} token={session.token} onArtifactChange={setActiveArtifact} onClose={() => setActiveArtifact(null)} />}
       </div>
     </div>
   );

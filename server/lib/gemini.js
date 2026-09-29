@@ -50,6 +50,32 @@ const DOCUMENT_TOOL = {
   }
 };
 
+
+const UPDATE_ARTIFACT_TOOL = {
+  name: "update_artifact",
+  description: "Edita projeto existente usando operações mínimas. Nunca repita arquivos intactos.",
+  parameters: {
+    type: "OBJECT",
+    properties: {
+      changes: {
+        type: "ARRAY",
+        items: {
+          type: "OBJECT",
+          properties: {
+            action: { type: "STRING", enum: ["create","update","delete"] },
+            path: { type: "STRING" },
+            content: { type: "STRING" },
+            language: { type: "STRING" }
+          },
+          required: ["action","path"]
+        }
+      },
+      summary: { type: "STRING" }
+    },
+    required: ["changes","summary"]
+  }
+};
+
 const HOME_ASSISTANT_TOOL = {
   name: "control_device",
   description: "Controla um dispositivo do Home Assistant (ligar/desligar/executar).",
@@ -65,7 +91,7 @@ const HOME_ASSISTANT_TOOL = {
 };
 
 function buildTools() {
-  const functionDeclarations = [IMAGE_TOOL, DOCUMENT_TOOL];
+  const functionDeclarations = [IMAGE_TOOL, DOCUMENT_TOOL, UPDATE_ARTIFACT_TOOL];
   if (HOME_ASSISTANT_ENABLED) functionDeclarations.push(HOME_ASSISTANT_TOOL);
   return [{ functionDeclarations }];
 }

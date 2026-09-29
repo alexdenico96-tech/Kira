@@ -103,3 +103,29 @@ export async function callGroqArtifactFallback({ systemInstruction, message }) {
 
   return { projectName: String(parsed.projectName || "projeto").trim() || "projeto", files };
 }
+
+
+export async function callGroqArtifactUpdateFallback({ systemInstruction, message }) {
+  const instruction = `${systemInstruction}
+
+Você está editando um Artifact existente. Responda SOMENTE JSON válido:
+{"changes":[{"action":"create|update|delete","path":"arquivo.ext","content":"conteúdo completo quando create/update","language":"..."}],"summary":"resumo curto"}.
+Retorne SOMENTE operações necessárias. Não repita arquivos intactos. Use delete sem content.`;
+
+  const raw = await tryModels({
+    messages: [{ role: "system", content: instruction }, { role: "user", content: message }],
+    maxTokens: 8192,
+    jsonMode: true
+  });
+  let parsed;
+  try { parsed = JSON.parse(raw); } catch {
+    const err = new Error("Groq retornou atualização de Artifact inválida.");
+    err.code = "invalid_artifact_update_json";
+    throw err;
+  }
+  const changes = Array.isArray(parsed?.changes) ? parsed.changes
+    .filter(x => x?.path && ["create","update","delete"].includes(x.action) && (x.action==="delete" || typeof x.content==="string"))
+    .map(x => ({action:x.action,path:String(x.path).trim(),...(x.action!=="delete"?{content:x.content,language:typeof x.language==="string"?x.language:""}:{})})) : [];
+  if (!changes.length) throw new Error("Groq não devolveu operações válidas.");
+  return { changes, summary: String(parsed.summary || "Alteração no projeto").slice(0, 240) };
+}
