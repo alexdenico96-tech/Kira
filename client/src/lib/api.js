@@ -90,3 +90,5 @@ export const getVersionChanges = (token, id, version) => request(`/projects/${id
 export const importProjectZip = (token, name, zipBase64) => request("/projects/import-zip", { method:"POST", token, body:{name,zipBase64} });
 export const exportProjectGithub = (token,id,owner,repo,branch="main") => request(`/projects/${id}/github-export`, {method:"POST",token,body:{owner,repo,branch}});
 export const importProjectGithub = (token,owner,repo,branch="main") => request("/projects/github-import", {method:"POST",token,body:{owner,repo,branch}});
+export const saveArtifactFile = (token,id,path,content) => request(`/artifacts/${id}/manual-save`, {method:"POST",token,body:{path,content}});
+export const getProviderStatus = (token) => request("/ai/providers", {token});

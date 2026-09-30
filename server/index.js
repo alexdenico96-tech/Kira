@@ -10,6 +10,7 @@ import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, g
 import { callGemini, buildPollinationsUrl, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
 import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
+import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
 import { routeRequest, estimateChars } from "./lib/modelRouter.js";
 import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, applyFileOperations, generateReadme, readZip } from "./lib/projectUtils.js";
 import {
@@ -332,6 +333,22 @@ app.post("/api/artifacts/:id/restore", requireAuth, async (req,res)=>{
   res.json(artifact);
 });
 
+app.get("/api/ai/providers", requireAuth, (req,res)=>{
+  res.json({extras:extraProviderStatus(),openai:OPENAI_ENABLED,groq:GROQ_ENABLED,gemini:true});
+});
+
+app.post("/api/artifacts/:id/manual-save", requireAuth, async (req,res)=>{
+  try{
+    const {path:changedPath,content}=req.body||{};
+    if(!changedPath||typeof content!=="string")return res.status(400).json({error:"path e content são obrigatórios."});
+    const current=await getArtifact(req.user.id,req.params.id);
+    if(!current)return res.status(404).json({error:"Artifact não encontrado."});
+    const applied=applyFileOperations(current.files,[{action:current.files.some(f=>f.path===changedPath)?"update":"create",path:changedPath,content}]);
+    const updated=await saveVersionWithOperations(req.user.id,current.id,applied.files,`Edição manual: ${changedPath}`,applied.manifest);
+    res.json(updated);
+  }catch(err){console.error(err);res.status(500).json({error:"Não consegui salvar a edição manual."});}
+});
+
 // ---------- Chat (Kira) ----------
 
 app.post("/api/chat", requireAuth, async (req, res) => {
@@ -363,12 +380,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const resolvedArtifactId = artifactId || mentioned?.id || active?.artifactId || null;
     const existingArtifact = resolvedArtifactId ? await getArtifact(req.user.id, resolvedArtifactId) : null;
     const editingArtifact = Boolean(existingArtifact && message && typeof message === "string");
-
-    // Quando o usuário pede explicitamente para criar/entregar arquivos ou um projeto,
-    // garante que o Gemini devolva um artifact estruturado em vez de apenas Markdown.
     const wantsArtifact = /(?:cria|crie|criar|gera|gere|gerar|faça|fazer|monte|montar|desenvolva|desenvolver|entregue|quero|preciso|arquivo|arquivos|artifact|projeto|site|landing page|html|css|javascript|react|código|codigo)/i.test(textMessage)
       && /(?:arquivo|arquivos|artifact|projeto|site|landing page|html|css|javascript|react|código|codigo|download|baixar|pasta)/i.test(textMessage);
-
     const currentParts = [{ text: textMessage }];
     if (image?.data) currentParts.push({ inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } });
     if (audio?.data) currentParts.push({ inlineData: { mimeType: audio.mimeType || "audio/webm", data: audio.data } });
@@ -397,8 +410,17 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     let usedFallback = false;
 
     try {
-      if(route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
+      if(route.task==="chat_small" && !editingArtifact && !wantsArtifact && !image && !audio){
+        try{
+          const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,maxTokens:700});
+          reply=extra.text; route.selectedProvider=extra.provider; route.selectedModel=extra.model;
+        }catch(extraErr){
+          if(extraErr.code!=="no_extra_provider") console.warn("[router] provedores extras indisponíveis:",extraErr.message);
+        }
+      }
+      if(!reply && route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
         reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,model:route.providers[0].model,maxTokens:900});
+        route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
       }
       const aiContents = editingArtifact
         ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }] }]
@@ -460,7 +482,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             const applied=applyFileOperations(existingArtifact.files,patch.changes);
             const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,applied.files,patch.summary,applied.manifest);
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
-            reply = `Atualizei **${artifactName}** para a **v${artifactVersion}** (${updated.changedFiles.join(", ")}).`;
+            reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
             const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage });
             artifactName = artifact.projectName;

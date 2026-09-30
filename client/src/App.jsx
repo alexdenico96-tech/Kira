@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import "./styles/KiraMidnight.css";
 import InputBar from "./components/InputBar.jsx";
 import MessageThread from "./components/MessageThread.jsx";
 import Sidebar from "./components/Sidebar.jsx";
