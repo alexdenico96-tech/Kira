@@ -75,8 +75,8 @@ export default function ArtifactWorkspace({ artifact, token, onArtifactChange, o
     }catch(e){setError(e.message);}
   }
 
-  return <section className="artifact-workspace flex min-w-0 flex-col border-l border-line bg-panel/95 w-[46%] min-w-[420px] max-w-[760px] max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:w-[min(92vw,760px)] max-lg:min-w-0">
-    <header className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
+  return <section className="artifact-workspace flex min-w-0 flex-col border-l border-line bg-panel/95 w-[46%] min-w-[420px] max-w-[760px] max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:h-[100dvh] max-lg:w-screen max-lg:max-w-none max-lg:min-w-0">
+    <header className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-line px-2 sm:px-3 py-2">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <p className="truncate text-sm font-display font-semibold text-paper">{artifact.name}</p>
@@ -102,7 +102,7 @@ export default function ArtifactWorkspace({ artifact, token, onArtifactChange, o
     </header>
     {error&&<div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div>}
     <div className="flex min-h-0 flex-1">
-      <aside className="w-36 xl:w-40 shrink-0 overflow-y-auto border-r border-line bg-ink/20 p-2">
+      <aside className="w-28 sm:w-36 xl:w-40 shrink-0 overflow-y-auto border-r border-line bg-ink/20 p-2">
         {files.map(file=><button key={file.path} onClick={()=>setSelectedPath(file.path)}
           className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs font-mono transition-colors ${selected.path===file.path?"bg-neon/15 text-neon":"text-mist hover:bg-panel2 hover:text-paper"}`}>
           <FileCode2 size={13} className="shrink-0"/><span className="truncate">{file.path}</span>
