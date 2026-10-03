@@ -1,257 +1,639 @@
-# Kira — Chat com IA
+# Kira --- Chat, Projetos e IA Multimodal
 
 **Em produção:** https://kira-agqc.onrender.com/
 
-Kira é uma interface de chat com IA com autenticação por usuário, recuperação de senha por e-mail, histórico de conversas e suporte a tarefas multimodais e de programação. O **Gemini** é o motor principal, com suporte a múltiplas chaves em rotação, e o **Groq** funciona como fallback quando o Gemini está temporariamente indisponível. A Kira também entende imagens e áudio, gera imagens, cria **Artifacts com um ou vários arquivos**, e pode controlar dispositivos físicos via Home Assistant (opcional).
+Kira é uma aplicação de IA com chat autenticado, histórico de conversas,
+recuperação de senha, entrada multimodal, geração de imagens e um
+workspace de desenvolvimento capaz de criar, editar, versionar,
+visualizar e exportar projetos. O Gemini continua como motor principal
+para tarefas de maior qualidade, enquanto Groq e provedores adicionais
+podem ampliar a disponibilidade e reduzir a dependência de um único
+serviço.
 
-## Estrutura
+A evolução atual da Kira inclui **Artifacts multi-arquivo**, **projetos
+persistentes**, **edição incremental**, **versionamento**, **Monaco
+Editor**, **Preview isolado**, **roteamento entre provedores**,
+**quality gate para projetos web**, **múltiplas chaves Groq/Gemini**,
+layout responsivo e a nova identidade visual da Kira.
 
-```text
+## Estado atual
+
+A versão atual corresponde à base **Kira v5.1 --- Quality + Preview**,
+construída sobre as evoluções v2, v3 e v4.
+
+Principais capacidades atuais:
+
+-   chat com IA e autenticação por usuário;
+-   recuperação de senha por e-mail;
+-   histórico persistente de conversas;
+-   análise de imagens e áudio enviados pelo usuário;
+-   geração de imagens;
+-   criação de projetos com múltiplos arquivos;
+-   edição incremental sem regenerar arquivos intactos;
+-   histórico e restauração de versões;
+-   projeto ativo persistente por conversa;
+-   Monaco Editor com syntax highlighting;
+-   Preview de HTML/CSS/JavaScript;
+-   download de arquivos, projeto completo e ZIP;
+-   importação de ZIP e recursos de integração/exportação para GitHub;
+-   geração de README e metadados de projeto;
+-   Gemini, Groq, Cloudflare Workers AI, Mistral, OpenRouter e OpenAI
+    opcional;
+-   deduplicação de chamadas e circuit breaker nos provedores
+    adicionais;
+-   quality gate para evitar projetos web vazios, desconectados ou
+    excessivamente simples;
+-   suporte a múltiplas chaves Gemini e Groq;
+-   interface Midnight responsiva para desktop e celular;
+-   PWA e novo conjunto de ícones/favicons da Kira;
+-   integração opcional com Home Assistant.
+
+## Estrutura principal
+
+``` text
 analytics-ai-dashboard/
-├── package.json           # scripts de build/start usados em produção
+├── package.json
 ├── server/
-│   ├── index.js           # auth, conversas, chat, artifacts, uso e comentários
+│   ├── index.js
 │   ├── lib/
-│   │   ├── auth.js        # JWT
-│   │   ├── gemini.js      # Gemini + ferramentas + rotação de chaves
-│   │   ├── groq.js        # fallback de IA para texto e artifacts
-│   │   ├── email.js       # envio de e-mail (Resend)
-│   │   ├── rateLimit.js   # limite por usuário e orçamento diário compartilhado
-│   │   └── store.js       # Postgres: usuários, conversas, mensagens e artifacts
-│   └── .env.example
+│   │   ├── auth.js
+│   │   ├── gemini.js
+│   │   ├── groq.js
+│   │   ├── openai.js
+│   │   ├── extraProviders.js
+│   │   ├── modelRouter.js
+│   │   ├── projectUtils.js
+│   │   ├── artifactQuality.js
+│   │   ├── email.js
+│   │   ├── rateLimit.js
+│   │   └── store.js
+│   └── .env.example / .env.v3.example
 └── client/
-    ├── public/             # favicons, logo.png, manifest.json/sw.js (PWA)
+    ├── public/
+    │   ├── apple-touch-icon.png
+    │   ├── favicon-16.png
+    │   ├── favicon-32.png
+    │   ├── favicon-192.png
+    │   ├── favicon-512.png
+    │   ├── favicon.png
+    │   ├── favicon.ico
+    │   ├── logo.png
+    │   └── manifest.json
     └── src/
-        ├── App.jsx         # estado principal + chat/workspace de artifacts
-        ├── lib/ (api.js, useTheme.js)
+        ├── App.jsx
+        ├── lib/
+        │   ├── api.js
+        │   └── useTheme.js
         └── components/
-            ├── LoginScreen.jsx      # login/cadastro/esqueci senha/redefinir
+            ├── LoginScreen.jsx
             ├── Sidebar.jsx
-            ├── SettingsModal.jsx    # tema, ajuda, uso, comentários
-            ├── InputBar.jsx         # texto + imagem + áudio
+            ├── SettingsModal.jsx
+            ├── InputBar.jsx
             ├── MessageThread.jsx
-            ├── ArtifactWorkspace.jsx # visualização/download de projetos e arquivos
+            ├── ArtifactWorkspace.jsx
             └── Markdown.jsx
 ```
 
 ## Rodando em desenvolvimento
 
-1. **Banco:** crie um projeto gratuito no Neon e copie a connection string.
-2. **Gemini:** gere uma chave no Google AI Studio.
-3. **Groq (recomendado):** gere uma chave para habilitar o fallback quando o Gemini estiver indisponível.
-4. **Backend:**
+### Backend
 
-   ```bash
-   cd server
-   npm install
-   cp .env.example .env
-   # preencha GEMINI_API_KEY, DATABASE_URL e JWT_SECRET
-   # GROQ_API_KEY e RESEND_API_KEY são opcionais, mas recomendados
-   npm run dev
-   ```
-
-   As tabelas/colunas do banco são criadas ou migradas automaticamente na inicialização.
-
-5. **Frontend:**
-
-   ```bash
-   cd client
-   npm install
-   npm run dev
-   ```
-
-   Abra `http://localhost:5173`.
-
-## Gemini: múltiplas chaves e rotação automática
-
-Se uma chave estiver atingindo o limite gratuito, é possível configurar várias:
-
-```env
-GEMINI_API_KEYS=chave_um,chave_dois,chave_tres
+``` bash
+cd server
+npm install
+cp .env.example .env
+npm run dev
 ```
 
-A Kira faz rotação entre as chaves configuradas e tenta outra chave quando uma chamada falha por cota/autenticação ou indisponibilidade recuperável. Isso reduz a dependência de uma única chave e melhora a disponibilidade do chat.
+O backend normalmente roda em:
 
-Também é possível manter apenas:
-
-```env
-GEMINI_API_KEY=sua_chave
+``` text
+http://localhost:3001
 ```
 
-O modelo pode ser configurado por `GEMINI_MODEL`.
+As tabelas e migrações necessárias são inicializadas pelo backend
+conforme a implementação de `store.js`.
 
-> Observação: várias chaves ajudam com cotas e disponibilidade, mas não eliminam indisponibilidades temporárias do próprio modelo, como respostas `503 UNAVAILABLE` em momentos de alta demanda.
+### Frontend
 
-## Fallback com Groq
-
-Quando todas as tentativas do Gemini falham, a Kira pode recorrer ao Groq em vez de encerrar imediatamente a solicitação.
-
-Configure:
-
-```env
-GROQ_API_KEY=sua_chave
+``` bash
+cd client
+npm install
+npm run dev
 ```
 
-O fallback suporta dois cenários:
+O frontend Vite normalmente fica disponível em:
 
-- **Chat normal:** retorna uma resposta textual.
-- **Artifacts:** solicita uma resposta estruturada com `projectName` e `files[]`, permitindo que um projeto continue sendo criado mesmo quando o Gemini estiver indisponível.
-
-A configuração atual prioriza modelos GPT-OSS compatíveis com a conta/chave configurada. Se `GROQ_MODEL` estiver definido no `.env`, ele pode ser usado como preferência antes das alternativas configuradas no código.
-
-A Kira só confirma que um Artifact foi criado depois de receber e validar arquivos. Se Gemini e Groq falharem, deve retornar uma mensagem de indisponibilidade em vez de afirmar que arquivos inexistentes foram gerados.
-
-## Artifacts e projetos multi-arquivo
-
-A Kira agora possui um fluxo específico para criação de código, documentos e pequenos projetos.
-
-Quando o usuário pede, por exemplo:
-
-> Crie uma landing page com `index.html`, `style.css` e `script.js` separados.
-
-A ferramenta de Artifact pode devolver:
-
-```text
-landing-page/
-├── index.html
-├── style.css
-└── script.js
+``` text
+http://localhost:5173
 ```
 
-Em vez de condensar tudo em um único HTML, o backend trabalha com uma estrutura semelhante a:
+## Banco de dados e autenticação
 
-```json
-{
-  "projectName": "landing-page",
-  "files": [
-    { "path": "index.html", "content": "...", "language": "html" },
-    { "path": "style.css", "content": "...", "language": "css" },
-    { "path": "script.js", "content": "...", "language": "javascript" }
-  ]
-}
+A Kira usa PostgreSQL para usuários, conversas, mensagens, Artifacts,
+versões, projetos e demais dados persistentes.
+
+A autenticação utiliza JWT e as senhas são armazenadas com hash.
+
+Uma conversa pertence obrigatoriamente a um usuário existente. Se um JWT
+antigo apontar para um usuário que já não existe na tabela `users`, o
+PostgreSQL rejeitará a criação da conversa pela foreign key. Nessa
+situação, a sessão deve ser renovada com logout/login ou novo cadastro.
+
+O frontend utiliza atualmente as chaves locais:
+
+``` text
+kira_token
+kira_user
 ```
 
-### Workspace de Artifact
+Não remova as foreign keys para contornar erros de sessão: elas protegem
+a integridade dos dados.
 
-Quando um Artifact é criado, a interface pode trabalhar em modo dividido:
+## Recuperação de senha
 
-```text
-┌──────────────────────┬──────────────────────────┐
-│                      │ Projeto                  │
-│       Chat           │ ├── index.html           │
-│                      │ ├── style.css            │
-│                      │ └── script.js            │
-│                      │                          │
-│                      │ Código do arquivo ativo  │
-└──────────────────────┴──────────────────────────┘
-```
+O fluxo utiliza token temporário e envio de e-mail pelo Resend:
 
-O chat permanece à esquerda e o Artifact à direita. O usuário pode navegar pelos arquivos, visualizar o conteúdo e fazer download dos arquivos/projeto. Em telas menores, o layout se adapta para evitar comprimir excessivamente o conteúdo.
-
-Artifacts antigos de arquivo único continuam sendo tratados como fallback para manter compatibilidade com conversas anteriores.
-
-## Escolha de tecnologias em projetos
-
-Ao criar um projeto novo, a Kira pode sugerir ou escolher uma tecnologia adequada quando o usuário não especificar uma stack.
-
-Exemplo:
-
-> Crie um pequeno dashboard para acompanhar tarefas.
-
-A Kira pode propor uma estrutura adequada antes/de acordo com a geração. Porém, quando estiver trabalhando em um projeto existente, deve **preservar a stack atual** e não migrar silenciosamente React para outra tecnologia, trocar banco de dados ou introduzir frameworks sem necessidade.
-
-O objetivo é permitir sugestões técnicas sem tornar a Kira imprevisível.
-
-## E-mail e recuperação de senha
-
-A recuperação de senha não utiliza perguntas de segurança. O fluxo atual é:
-
-```text
+``` text
 Esqueci minha senha
        ↓
 usuário informa o e-mail
        ↓
-token aleatório temporário
+token temporário
        ↓
 Resend envia o link
        ↓
 usuário define nova senha
 ```
 
-O link de redefinição expira em aproximadamente 1 hora. O token é armazenado de forma protegida e invalidado depois da troca de senha.
+Variáveis:
 
-Configure:
-
-```env
-RESEND_API_KEY=sua_chave
+``` env
+RESEND_API_KEY=
 EMAIL_FROM=Kira <seu-email@seu-dominio.com>
-APP_URL=https://seu-dominio.com
+APP_URL=
 ```
 
-⚠️ O remetente de teste do Resend pode ter restrições de destinatários. Para produção, use um domínio verificado no Resend e configure `EMAIL_FROM` com esse domínio.
+O endpoint deve responder genericamente mesmo quando o e-mail não
+existe.
 
-O endpoint de recuperação responde de forma genérica mesmo quando o e-mail não existe, evitando revelar quais endereços estão cadastrados.
+## Gemini
 
-## Controlar dispositivos físicos (Home Assistant) — opcional
+Gemini é o provedor principal para tarefas que exigem melhor
+compreensão, multimodalidade e geração estruturada de Artifacts.
 
-1. Gere um token de longa duração no Home Assistant.
-2. Configure `HOME_ASSISTANT_URL` e `HOME_ASSISTANT_TOKEN`.
-3. A ferramenta `control_device` fica disponível para a Kira.
+Uma chave:
 
-Sem essas variáveis, a integração permanece desabilitada.
+``` env
+GEMINI_API_KEY=
+GEMINI_MODEL=
+```
+
+Múltiplas chaves:
+
+``` env
+GEMINI_API_KEYS=chave1,chave2,chave3
+```
+
+A aplicação pode alternar entre chaves quando uma tentativa falha por
+condições recuperáveis. O uso de várias chaves deve respeitar os limites
+e termos do provedor.
+
+Na geração estruturada de projetos, a configuração foi ajustada para
+reduzir aleatoriedade e permitir respostas maiores. O objetivo é
+diminuir casos em que um pedido completo vira apenas um HTML mínimo.
+
+## Groq e múltiplas chaves
+
+Groq funciona como fallback para texto e para geração/atualização de
+Artifacts.
+
+Uma chave continua compatível:
+
+``` env
+GROQ_API_KEY=
+```
+
+A versão atual também aceita:
+
+``` env
+GROQ_API_KEYS=chave1,chave2,chave3,chave4
+```
+
+As chaves são rotacionadas para redundância e disponibilidade. Cada
+chamada continua sujeita às cotas e termos do Groq; múltiplas chaves não
+tornam o consumo ilimitado.
+
+Também é possível configurar:
+
+``` env
+GROQ_MODEL=
+```
+
+O fallback de Artifact exige uma resposta estruturada e não deve
+confirmar que um projeto foi criado se nenhum arquivo válido tiver sido
+recebido.
+
+## Provedores adicionais
+
+A arquitetura v4 adicionou um pool opcional de provedores para reduzir a
+dependência de Gemini/Groq em conversas simples.
+
+### Cloudflare Workers AI
+
+``` env
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_MODEL=@cf/meta/llama-3.1-8b-instruct
+```
+
+### Mistral
+
+``` env
+MISTRAL_API_KEY=
+MISTRAL_MODEL=mistral-small-latest
+```
+
+### OpenRouter
+
+``` env
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=openrouter/free
+```
+
+### OpenAI opcional
+
+A estrutura também possui suporte opcional ao provedor OpenAI quando
+configurado.
+
+### Ordem e circuit breaker
+
+``` env
+EXTRA_PROVIDER_ORDER=cloudflare,mistral,openrouter
+AI_PROVIDER_COOLDOWN_MS=600000
+```
+
+`extraProviders.js` implementa pool de provedores, deduplicação de
+chamadas em andamento e cooldown/circuit breaker para erros como `429` e
+falhas temporárias do servidor.
+
+A estratégia recomendada é reservar modelos mais capazes para criação e
+alteração de projetos e usar modelos econômicos para conversas simples.
+
+## Roteamento de modelos
+
+`modelRouter.js` classifica a solicitação para evitar usar o mesmo
+modelo em todas as tarefas.
+
+Conceitualmente:
+
+``` text
+conversa simples   → provedor rápido/econômico
+tarefa complexa    → modelo mais capaz
+novo Artifact      → geração estruturada de projeto
+edição de projeto  → atualização incremental
+imagem/áudio       → fluxo multimodal
+```
+
+O roteamento deve priorizar qualidade em geração de código. Economizar
+uma chamada não é vantajoso quando o resultado precisa ser regenerado
+várias vezes.
+
+## Artifacts multi-arquivo
+
+Um pedido como:
+
+> Crie uma landing page com HTML, CSS e JavaScript separados.
+
+pode produzir:
+
+``` text
+landing-page/
+├── index.html
+├── style.css
+└── script.js
+```
+
+Cada arquivo possui caminho, conteúdo e linguagem. O projeto completo é
+persistido como Artifact e pode ser reaberto posteriormente.
+
+## Kira v2 --- versionamento incremental
+
+A v2 introduziu versionamento real de Artifacts.
+
+Em vez de substituir silenciosamente o projeto inteiro, cada alteração
+cria uma nova versão:
+
+``` text
+projeto
+├── v1 — criação inicial
+├── v2 — alteração do hero
+└── v3 — nova funcionalidade
+```
+
+Quando apenas um arquivo é alterado, a atualização pode registrar
+somente esse arquivo modificado enquanto o snapshot reconstruído
+continua representando o projeto completo.
+
+O workspace permite selecionar versões anteriores e restaurar uma
+versão.
+
+## Kira v3 --- projetos persistentes
+
+A v3 transformou Artifacts em projetos mais persistentes.
+
+Foram adicionados conceitos como:
+
+-   projeto ativo;
+-   metadados;
+-   reconstrução do estado completo;
+-   operações `create`, `update` e `delete`;
+-   manifest de alterações;
+-   README gerado;
+-   ZIP completo e ZIP de alterações;
+-   importação de ZIP;
+-   endpoints/estrutura para integração com GitHub;
+-   roteamento de modelos;
+-   cache baseado em normalização/fingerprint e similaridade.
+
+A atualização de um projeto existente deve preservar a stack e modificar
+apenas o necessário.
+
+## Kira v4 --- workspace moderno
+
+A v4 adicionou uma experiência mais próxima de um ambiente de
+desenvolvimento.
+
+### Monaco Editor
+
+O workspace utiliza Monaco para oferecer:
+
+-   syntax highlighting;
+-   numeração de linhas;
+-   busca;
+-   navegação mais confortável pelo código;
+-   edição manual;
+-   salvamento como nova versão.
+
+### Preview
+
+Projetos HTML/CSS/JavaScript podem ser visualizados antes de serem
+abertos em ferramentas externas.
+
+O Preview roda em iframe com sandbox e não deve executar o projeto
+gerado diretamente no contexto principal da aplicação.
+
+### Layout Midnight
+
+A interface foi atualizada para um visual azul-marinho escuro, moderno e
+consistente com a identidade da Kira.
+
+No desktop, o workspace possui largura controlada para não dominar o
+chat.
+
+No mobile, o workspace assume uma visualização praticamente full-screen,
+evitando que editor, arquivos e Preview fiquem comprimidos.
+
+## Kira v5 --- Quality Gate
+
+A v5 foi criada para atacar um problema importante: o modelo às vezes
+criava os arquivos corretos em quantidade, mas entregava código mínimo,
+desconectado ou sem qualidade suficiente.
+
+O módulo:
+
+``` text
+server/lib/artifactQuality.js
+```
+
+adiciona validação específica para projetos web.
+
+Para um projeto HTML/CSS/JS simples, o quality gate verifica elementos
+como:
+
+-   existência de `index.html`;
+-   existência de `style.css`;
+-   existência de `script.js`;
+-   HTML com estrutura mínima útil;
+-   CSS com conteúdo suficiente;
+-   JavaScript com comportamento utilizável;
+-   ligação entre HTML, CSS e JavaScript;
+-   coerência estrutural;
+-   quantidades explícitas solicitadas pelo usuário quando detectáveis.
+
+Quando necessário, conexões básicas entre os arquivos podem ser
+reparadas deterministicamente.
+
+Se a primeira geração estrutural falhar na validação, o backend pode
+realizar uma tentativa de correção com os problemas encontrados antes de
+recorrer ao fallback.
+
+## Kira v5.1 --- Quality + Preview
+
+A v5.1 corrigiu o caso em que `style.css` existia, mas o Preview ainda
+aparecia como HTML sem formatação.
+
+O Preview agora coleta os arquivos CSS e JavaScript do próprio Artifact
+e os injeta no documento renderizado. Isso reduz a dependência de
+caminhos imperfeitos gerados pelo modelo.
+
+O quality gate também foi reforçado para rejeitar:
+
+-   CSS quase vazio;
+-   CSS sem quantidade mínima de regras/declarations úteis;
+-   JavaScript excessivamente curto;
+-   JavaScript sem comportamento reconhecível;
+-   páginas que ignoram requisitos quantitativos explícitos;
+-   projetos visualmente mínimos quando o pedido exige uma interface
+    completa.
+
+O prompt de geração passou a enfatizar:
+
+-   layout responsivo;
+-   tipografia;
+-   espaçamento;
+-   cores;
+-   cards;
+-   botões;
+-   estados visuais;
+-   interações reais;
+-   coerência entre seletores, IDs e arquivos;
+-   cumprimento literal de quantidades solicitadas.
+
+## Resposta após criação de projeto
+
+Depois de criar um projeto, a Kira evita uma descrição genérica e
+informa os arquivos efetivamente produzidos.
+
+Exemplo:
+
+> Criei os arquivos `index.html`, `style.css`, `script.js` conforme
+> solicitado por você. Dá uma olhadinha e me fale se precisa arrumar
+> alguma coisa.
+
+A confirmação só deve acontecer depois que os arquivos forem recebidos e
+validados.
+
+## Edição incremental
+
+Para projetos existentes, a Kira utiliza operações equivalentes a:
+
+``` text
+create
+update
+delete
+```
+
+Arquivos que não precisam mudar não devem ser regenerados.
+
+Isso reduz:
+
+-   tokens;
+-   tamanho da resposta;
+-   risco de quebrar partes já corretas;
+-   consumo desnecessário de APIs.
+
+## Workspace e exportação
+
+O workspace permite:
+
+-   navegar pelos arquivos;
+-   abrir arquivos no Monaco;
+-   editar código;
+-   visualizar Preview;
+-   selecionar versões;
+-   restaurar versões;
+-   baixar um arquivo;
+-   baixar o projeto em ZIP;
+-   trabalhar com ZIP de alterações;
+-   visualizar README/metadados quando disponíveis.
+
+A arquitetura v3/v4 também preparou operações de importação/exportação e
+integração com GitHub.
 
 ## Imagem e áudio
 
-- **Imagem:** pode ser enviada junto à conversa para análise pelo modelo multimodal.
-- **Áudio:** pode ser enviado para interpretação pela IA.
-- **Geração de imagem:** a Kira pode chamar a ferramenta `generate_image`, atualmente integrada ao Pollinations.
+Atualmente:
 
-Anexos são enviados ao backend em base64. Evite aumentar excessivamente o limite de upload sem também adicionar validações de tamanho e tipo.
+-   imagens podem ser anexadas à conversa;
+-   áudio pode ser enviado para interpretação;
+-   a Kira pode gerar imagens usando sua integração configurada;
+-   anexos são enviados ao backend em base64.
 
-## Histórico de conversas
+A criação musical e remasterização de faixas **ainda não fazem parte da
+versão atual**. Está planejado um futuro **Kira Audio Studio**, separado
+do fluxo de chat, para geração musical e processamento/masterização de
+áudio.
 
-Cada usuário possui suas próprias conversas. O backend associa as conversas ao usuário autenticado e o frontend permite selecionar, criar e excluir conversas.
+## Nova identidade visual
 
-Artifacts podem ser armazenados junto às mensagens da assistente para que projetos gerados possam reaparecer quando uma conversa for reaberta.
+A identidade da Kira foi atualizada para um estilo mais tecnológico e
+cinematográfico.
 
-## Painel de Configurações
+O ícone atual utiliza:
 
-A interface inclui configurações de aparência, ajuda, acompanhamento de uso e envio de comentários.
+-   robô humanoide sem rosto visível;
+-   visor/máscara escura;
+-   acabamento metálico;
+-   iluminação azul;
+-   letra `K` integrada;
+-   estética premium de hardware futurista.
 
-Os comentários ficam armazenados no banco e podem ser consultados administrativamente.
+Arquivos atuais em `client/public`:
 
-## Limites de uso
+``` text
+apple-touch-icon.png
+favicon-16.png
+favicon-32.png
+favicon-192.png
+favicon-512.png
+favicon.png
+favicon.ico
+logo.png
+```
 
-A aplicação possui proteção em dois níveis:
+Os tamanhos menores recebem redimensionamento apropriado para manter
+legibilidade como favicon.
 
-- limite de mensagens por usuário em uma janela de tempo;
-- orçamento diário compartilhado de chamadas de IA.
+## PWA
 
-O limite global pode ser configurado por `DAILY_MAX_AI_CALLS`.
+A Kira continua preparada para instalação como PWA.
 
-Como Gemini e Groq possuem limites próprios, especialmente nos planos gratuitos, a aplicação deve tratar `429`, `503`, modelos indisponíveis e outras falhas de provedor como situações esperadas e recuperáveis.
+**Android/Chrome:** menu → Adicionar à tela inicial.
 
-## Deploy em produção (Render)
+**iPhone/Safari:** compartilhar → Adicionar à Tela de Início.
 
-1. Suba o projeto para o GitHub sem `.env` ou `node_modules`.
-2. No Render, crie um Web Service conectado ao repositório.
-3. Use os comandos definidos pelo projeto para build/start.
-4. Configure as variáveis de ambiente necessárias.
+O `manifest.json`, service worker e ícones devem permanecer
+sincronizados com os arquivos de `public`.
 
-Principais variáveis:
+## Home Assistant
 
-```env
+A integração continua opcional.
+
+``` env
+HOME_ASSISTANT_URL=
+HOME_ASSISTANT_TOKEN=
+```
+
+Quando configurada, a ferramenta de controle pode ser disponibilizada à
+Kira. Sem essas variáveis, a integração permanece desativada.
+
+## Limites e eficiência de APIs
+
+A Kira possui limites internos e deve também respeitar as cotas de cada
+provedor.
+
+``` env
+DAILY_MAX_AI_CALLS=
+```
+
+A estratégia atual combina:
+
+-   roteamento local;
+-   cache;
+-   deduplicação;
+-   edição incremental;
+-   múltiplos provedores;
+-   fallback limitado;
+-   circuit breaker;
+-   uso de modelos econômicos para tarefas simples;
+-   modelos melhores para geração de projetos.
+
+Erros `429`, `503` e indisponibilidades temporárias devem ser tratados
+como situações recuperáveis.
+
+## Variáveis de ambiente principais
+
+Exemplo consolidado:
+
+``` env
 DATABASE_URL=
 JWT_SECRET=
 APP_URL=
 NODE_ENV=production
 
 GEMINI_API_KEY=
-# ou GEMINI_API_KEYS=
+# ou:
+GEMINI_API_KEYS=
 GEMINI_MODEL=
 
 GROQ_API_KEY=
+# ou:
+GROQ_API_KEYS=
 GROQ_MODEL=
+
+CLOUDFLARE_ACCOUNT_ID=
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_MODEL=@cf/meta/llama-3.1-8b-instruct
+
+MISTRAL_API_KEY=
+MISTRAL_MODEL=mistral-small-latest
+
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=openrouter/free
+
+EXTRA_PROVIDER_ORDER=cloudflare,mistral,openrouter
+AI_PROVIDER_COOLDOWN_MS=600000
 
 RESEND_API_KEY=
 EMAIL_FROM=
@@ -262,158 +644,197 @@ HOME_ASSISTANT_TOKEN=
 DAILY_MAX_AI_CALLS=
 ```
 
-Nem todas são obrigatórias. Home Assistant, Resend e Groq são integrações opcionais.
+Não publique `.env`, tokens, senhas ou connection strings no
+repositório.
 
-## Instalar no celular (PWA)
+## Deploy no Render
 
-**Android/Chrome:** menu → Adicionar à tela inicial.
+Fluxo geral:
 
-**iPhone/Safari:** compartilhar → Adicionar à Tela de Início.
+1.  envie o projeto para um repositório sem `.env` e sem `node_modules`;
+2.  conecte o repositório ao Render;
+3.  configure build/start conforme o `package.json`;
+4.  adicione as variáveis de ambiente;
+5.  confirme a conexão com PostgreSQL;
+6.  teste login, chat, Artifact e Preview após o deploy.
+
+### Aviso de SSL do PostgreSQL
+
+Versões recentes de `pg`/`pg-connection-string` podem mostrar um aviso
+sobre mudanças futuras na interpretação de `sslmode=require`.
+
+Esse warning não significa necessariamente que a conexão falhou. Para
+preservar o comportamento de verificação mais forte, a connection string
+pode ser configurada explicitamente conforme a política SSL do provedor
+do banco.
 
 ## Segurança
 
-- Chaves de API e connection strings permanecem no backend.
-- Senhas são armazenadas com hash usando bcrypt.
-- Tokens de recuperação de senha são aleatórios, temporários e invalidados após uso.
-- O endpoint de recuperação não revela se uma conta existe.
-- Rotas privadas utilizam autenticação JWT.
-- Conversas são isoladas por usuário no backend.
+Princípios atuais:
 
-## Melhorias futuras sugeridas
+-   secrets permanecem no backend;
+-   senhas usam hash;
+-   JWT protege rotas privadas;
+-   conversas e projetos são isolados por usuário;
+-   foreign keys preservam integridade;
+-   recuperação de senha não revela se uma conta existe;
+-   Preview utiliza isolamento;
+-   caminhos de arquivos devem impedir traversal como `../`;
+-   o backend deve validar respostas dos modelos antes de
+    persistir/confirmar ações;
+-   código produzido por IA deve ser tratado como conteúdo não
+    confiável.
 
-A base atual já permite evoluir a Kira sem reconstruir o projeto. Algumas melhorias interessantes para próximas versões:
+## Testes realizados nas evoluções recentes
 
-### 1. Editor de código real no Artifact
+Durante os hotfixes recentes foram executados testes locais de sintaxe e
+verificações específicas.
 
-Hoje o workspace é principalmente de visualização. Uma evolução natural é permitir editar o conteúdo diretamente no painel, com:
+Entre os comportamentos já validados:
 
-- numeração de linhas;
-- syntax highlighting mais completo;
-- busca dentro dos arquivos;
-- indicação de alterações não salvas;
-- salvar uma nova versão do Artifact.
+-   Artifact v1 com múltiplos arquivos;
+-   alteração incremental gerando v2;
+-   reconstrução do snapshot completo;
+-   seletor de versões;
+-   layout desktop do workspace;
+-   layout mobile full-screen;
+-   quality gate básico;
+-   reparo automático de ligação HTML/CSS/JS;
+-   Preview com injeção direta de CSS/JS;
+-   sintaxe dos módulos alterados e instaladores.
 
-Um editor como Monaco ou CodeMirror pode ser avaliado no futuro, mas não é necessário para o funcionamento atual.
+Chamadas reais a provedores que exigem credenciais não podem ser
+consideradas testadas apenas por testes locais. O funcionamento final
+também depende das chaves, modelos, cotas e disponibilidade externa.
 
-### 2. Preview ao vivo para HTML/CSS/JavaScript
+## Pontos ainda importantes para evoluir
 
-Para projetos web simples, adicionar uma aba **Preview** capaz de renderizar o resultado dos arquivos do Artifact em um ambiente isolado.
+### Detecção de intenção de edição
 
-O isolamento é importante: código gerado pela IA não deve executar diretamente no contexto principal da aplicação.
+Um projeto ativo não deve fazer qualquer mensagem comum ser interpretada
+automaticamente como pedido de edição. A intenção deve ser detectada
+explicitamente antes de chamar `update_artifact`.
 
-### 3. Versionamento de Artifacts
+### Quality gate por stack
 
-Guardar versões sucessivas do mesmo projeto:
+A validação atual é especialmente voltada a projetos HTML/CSS/JavaScript
+simples. Ela deve evoluir para reconhecer stacks diferentes.
 
-```text
-landing-page
-├── v1 — criação inicial
-├── v2 — alteração do hero
-└── v3 — formulário adicionado
+Exemplo:
+
+``` text
+HTML/CSS/JS → index.html + CSS + JS
+React/Vite  → package.json + src/main.jsx + src/App.jsx + estilos
+Node        → package.json + arquivos de servidor
 ```
 
-Isso permitiria pedir “volte para a versão anterior” ou comparar mudanças.
+Não se deve exigir `style.css` e `script.js` de toda aplicação web
+independentemente da tecnologia.
 
-### 4. Editar apenas arquivos necessários
+### Validação cruzada mais profunda
 
-Quando o usuário pedir uma alteração em um projeto existente, enviar ao modelo somente o contexto necessário e solicitar patches/arquivos modificados, em vez de regenerar todo o projeto.
+Evoluções desejáveis:
 
-Isso reduz consumo de tokens e é especialmente importante usando APIs gratuitas.
+-   verificar seletores/IDs usados entre HTML, CSS e JS;
+-   confirmar que arquivos locais referenciados existem;
+-   detectar imports quebrados;
+-   detectar assets inexistentes;
+-   smoke test do Preview;
+-   identificar conteúdo truncado.
 
-### 5. Contexto de projeto persistente
+### Observabilidade
 
-Transformar um Artifact em um projeto persistente com metadados próprios, separado do histórico textual da conversa. Isso permitiria continuar trabalhando no mesmo código através de várias sessões.
+Adicionar painel administrativo para acompanhar:
 
-### 6. Exportação mais completa
+-   provedor utilizado;
+-   modelo utilizado;
+-   chamadas por provedor;
+-   `429`/`503`;
+-   fallback;
+-   taxa de sucesso de Artifacts;
+-   tentativas de reparo;
+-   consumo aproximado por tarefa.
 
-Além de download individual e ZIP, futuramente avaliar:
+### Concorrência e transações
 
-- exportar diretamente para GitHub;
-- importar um repositório existente;
-- gerar README automaticamente;
-- copiar estrutura completa do projeto;
-- exportar somente arquivos alterados.
+Operações de versão/projeto devem continuar evoluindo para evitar
+conflitos quando duas alterações são realizadas simultaneamente.
 
-### 7. Roteamento inteligente entre modelos
+### Diff visual
 
-Em vez de usar sempre o mesmo modelo para tudo, criar uma camada de roteamento:
+Adicionar comparação entre versões e arquivos modificados tornará o
+versionamento mais fácil de entender.
 
-```text
-conversa simples → modelo rápido/econômico
-código pequeno   → modelo de código rápido
-artifact grande  → modelo com maior contexto/saída
-imagem/áudio     → modelo multimodal
+## Próximo módulo planejado --- Kira Audio Studio
+
+Ainda não implementado.
+
+A proposta é criar uma área própria para:
+
+``` text
+KIRA AUDIO STUDIO
+├── Gerar música por gênero/mood/BPM
+├── Gerar faixa instrumental
+├── Upload de WAV/MP3
+├── Remasterização
+├── Preview antes/depois
+├── Waveform
+├── Histórico de versões
+└── Exportação WAV / MP3
 ```
 
-Isso pode aumentar a disponibilidade e aproveitar melhor cotas gratuitas.
+A geração musical deve usar provedores de áudio dedicados, sem consumir
+desnecessariamente as cotas dos modelos de chat.
 
-### 8. Descoberta automática de modelos disponíveis
+A masterização pode combinar IA com processamento determinístico, por
+exemplo normalização, EQ, compressão, limiter e exportação.
 
-No fallback Groq, consultar periodicamente os modelos disponíveis para a chave e evitar depender apenas de IDs hardcoded. Também é possível manter uma allowlist interna de modelos considerados compatíveis com Artifacts.
-
-### 9. Observabilidade de provedores
-
-Adicionar métricas administrativas para entender:
-
-- quantas chamadas foram para Gemini;
-- quantas precisaram de fallback;
-- quantidade de erros 429/503;
-- tokens aproximados por tarefa;
-- taxa de sucesso de Artifacts;
-- modelo que efetivamente respondeu.
-
-Isso facilita decidir onde otimizar sem depender apenas dos logs do Render.
-
-### 10. Validação mais forte de Artifacts
-
-Antes de entregar um projeto:
-
-- confirmar que `files[]` não está vazio;
-- impedir caminhos perigosos (`../`);
-- limitar tamanho e quantidade de arquivos;
-- validar nomes/extensões;
-- detectar conteúdo truncado;
-- não confirmar criação quando o provedor retornar resposta incompleta.
-
-### 11. Segurança do preview e dos arquivos
-
-Antes de permitir execução/preview avançado de código gerado, adicionar sandboxing, Content Security Policy e limites de recursos. Código produzido por IA deve ser tratado como conteúdo não confiável.
-
-### 12. Filas e retry para indisponibilidade temporária
-
-Para erros como `503 UNAVAILABLE`, uma evolução futura é implementar retry com exponential backoff e jitter, respeitando limites dos provedores. Para tarefas maiores, uma fila pode impedir que várias gerações simultâneas esgotem rapidamente a cota gratuita.
-
-### 13. Melhor gerenciamento de contexto e tokens
-
-Para conversas longas:
-
-- resumir mensagens antigas;
-- manter separadamente decisões importantes do projeto;
-- enviar apenas arquivos relevantes para cada alteração;
-- calcular orçamento de contexto antes de chamar o modelo.
-
-Isso melhora qualidade e reduz custo/uso de cota.
-
-### 14. Testes automatizados
-
-Adicionar testes para os fluxos mais críticos:
-
-- cadastro/login;
-- recuperação de senha;
-- isolamento de conversas por usuário;
-- fallback Gemini → Groq;
-- Artifact de arquivo único;
-- Artifact multi-arquivo;
-- persistência/reabertura de Artifact;
-- comportamento quando todos os provedores falham.
-
-Essa é uma das melhorias mais importantes antes de aumentar muito o número de usuários.
+Esse módulo deve ser implementado somente depois de estabilizar
+completamente o fluxo atual de projetos.
 
 ## Princípios para próximas evoluções
 
-Ao adicionar novas capacidades à Kira, manter quatro princípios:
+1.  **Não afirmar que uma ação foi concluída antes de validar o
+    resultado.**
+2.  **Preservar a stack de projetos existentes, salvo quando o usuário
+    pedir uma migração.**
+3.  **Modificar somente os arquivos necessários em projetos
+    existentes.**
+4.  **Tratar indisponibilidade de APIs como parte normal do sistema.**
+5.  **Priorizar qualidade de geração antes de simplesmente reduzir o
+    número de chamadas.**
+6.  **Usar modelos mais baratos para tarefas simples e modelos mais
+    capazes para projetos complexos.**
+7.  **Manter secrets exclusivamente no backend.**
+8.  **Tratar código gerado como conteúdo não confiável.**
+9.  **Validar a saída antes de persistir ou confirmar Artifacts.**
+10. **Manter desktop, mobile e PWA como experiências de primeira
+    classe.**
 
-1. **Não afirmar que uma ação foi concluída antes de validar o resultado.**
-2. **Preservar a stack de projetos existentes, salvo quando o usuário pedir uma migração.**
-3. **Tratar indisponibilidade de APIs como parte normal do sistema, com fallback e mensagens claras.**
-4. **Priorizar eficiência de tokens e compatibilidade com planos gratuitos enquanto o projeto estiver nessa fase.**
+------------------------------------------------------------------------
+
+## Linha de evolução
+
+``` text
+Base inicial
+   ↓
+Artifacts multi-arquivo
+   ↓
+v2 — versionamento incremental
+   ↓
+v3 — projetos persistentes / operações / ZIP / GitHub
+   ↓
+v3 hotfix — correção wantsArtifact + workspace desktop
+   ↓
+v3 mobile hotfix — workspace responsivo
+   ↓
+v4 — Monaco + Preview + Midnight UI + novos provedores
+   ↓
+v5 — Quality Gate + múltiplas chaves Groq
+   ↓
+v5.1 — Quality reforçado + correção do Preview CSS/JS
+   ↓
+Nova identidade visual / favicons
+   ↓
+Próximo: Kira Audio Studio
+```

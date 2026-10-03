@@ -16,10 +16,24 @@ function languageFor(file){const ext=(file?.path?.split(".").pop()||"").toLowerC
 function previewDocument(files){
   const html=files.find(f=>/(^|\/)index\.html?$/i.test(f.path))||files.find(f=>/\.html?$/i.test(f.path));
   if(!html)return `<!doctype html><html><body style="font-family:system-ui;background:#071225;color:#f1f5f9;padding:32px"><h2>Preview indisponível</h2><p>Este projeto não possui um arquivo HTML.</p></body></html>`;
+
   let doc=String(html.content||"");
-  const byBase=new Map(files.map(f=>[f.path.split("/").pop(),f]));
-  doc=doc.replace(/<link\b([^>]*?)href=["']([^"']+\.css)["']([^>]*)>/gi,(m,a,href,b)=>{const f=files.find(x=>x.path===href)||byBase.get(href.split("/").pop());return f?`<style data-kira-source="${href}">${f.content}</style>`:m;});
-  doc=doc.replace(/<script\b([^>]*?)src=["']([^"']+\.js)["']([^>]*)><\/script>/gi,(m,a,src,b)=>{const f=files.find(x=>x.path===src)||byBase.get(src.split("/").pop());return f?`<script data-kira-source="${src}">${f.content}<\/script>`:m;});
+  // Remove referências locais: o Preview injeta o conteúdo real dos arquivos do artifact.
+  doc=doc.replace(/<link\b[^>]*href=["'][^"']+\.css(?:\?[^"']*)?["'][^>]*>/gi,"");
+  doc=doc.replace(/<script\b[^>]*src=["'][^"']+\.js(?:\?[^"']*)?["'][^>]*><\/script>/gi,"");
+
+  const css=files.filter(f=>/\.css$/i.test(f.path)).map(f=>`/* ${f.path} */\n${f.content||""}`).join("\n\n");
+  const js=files.filter(f=>/\.(?:js|mjs)$/i.test(f.path)).map(f=>`/* ${f.path} */\n${f.content||""}`).join("\n\n");
+
+  const styleTag=`<style id="kira-preview-styles">\n${css}\n</style>`;
+  const scriptTag=`<script id="kira-preview-scripts">\n${js.replace(/<\/script/gi,"<\\/script")}\n<\/script>`;
+
+  if(/<\/head>/i.test(doc)) doc=doc.replace(/<\/head>/i,`${styleTag}\n</head>`);
+  else doc=`${styleTag}\n${doc}`;
+
+  if(/<\/body>/i.test(doc)) doc=doc.replace(/<\/body>/i,`${scriptTag}\n</body>`);
+  else doc=`${doc}\n${scriptTag}`;
+
   return doc;
 }
 

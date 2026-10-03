@@ -1,7 +1,11 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+function getGroqKeys() {
+  const raw = process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY || "";
+  return [...new Set(raw.split(",").map(k => k.trim()).filter(Boolean))];
+}
+let groqKeyIndex = 0;
 const DEFAULT_MODELS = ["openai/gpt-oss-20b", "openai/gpt-oss-120b"];
 
 function getGroqModels() {
@@ -12,12 +16,12 @@ function getGroqModels() {
   return [...new Set([...configured, ...DEFAULT_MODELS])];
 }
 
-export const GROQ_ENABLED = Boolean(GROQ_API_KEY);
+export const GROQ_ENABLED = getGroqKeys().length > 0;
 
-async function requestGroq({ model, messages, maxTokens = 4096, jsonMode = false }) {
+async function requestGroq({ apiKey, model, messages, maxTokens = 4096, jsonMode = false }) {
   const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${GROQ_API_KEY}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model,
       messages,
@@ -45,16 +49,22 @@ async function tryModels(request) {
     throw err;
   }
 
+  const keys = getGroqKeys();
+  const start = groqKeyIndex++ % keys.length;
   let lastError;
   for (const model of getGroqModels()) {
-    try {
-      return await requestGroq({ ...request, model });
-    } catch (err) {
-      lastError = err;
-      console.error(`[groq] modelo ${model} falhou:`, err.message);
+    for (let i = 0; i < keys.length; i++) {
+      const apiKey = keys[(start + i) % keys.length];
+      try {
+        return await requestGroq({ ...request, model, apiKey });
+      } catch (err) {
+        lastError = err;
+        console.error(`[groq] modelo ${model}, chave ${((start+i)%keys.length)+1}/${keys.length} falhou:`, err.status || err.message);
+        if (![401,403,429,500,502,503,504].includes(err.status)) break;
+      }
     }
   }
-  throw lastError || new Error("Nenhum modelo Groq disponível.");
+  throw lastError || new Error("Nenhum modelo/chave Groq disponível.");
 }
 
 export async function callGroqFallback({ systemInstruction, message }) {
@@ -69,7 +79,8 @@ export async function callGroqFallback({ systemInstruction, message }) {
 }
 
 export async function callGroqArtifactFallback({ systemInstruction, message }) {
-  const artifactInstruction = `${systemInstruction}\n\nVocê está no modo de criação de Artifact. Responda SOMENTE com um objeto JSON válido, sem markdown e sem texto antes/depois, no formato: {"projectName":"nome-do-projeto","files":[{"path":"index.html","content":"conteúdo completo","language":"html"}]}. Inclua TODOS os arquivos necessários pedidos pelo usuário. Cada arquivo deve ter path e content completos. Não diga que criou arquivos se files estiver vazio.`;
+  const artifactInstruction = `${systemInstruction}\n\nVocê está no modo de criação de Artifact. Responda SOMENTE com um objeto JSON válido, sem markdown e sem texto antes/depois, no formato: {"projectName":"nome-do-projeto","files":[{"path":"index.html","content":"conteúdo completo","language":"html"}]}. Inclua TODOS os arquivos necessários pedidos pelo usuário. Cada arquivo deve ter path e content completos. Não diga que criou arquivos se files estiver vazio.
+Para qualquer site HTML/CSS/JavaScript, gere no mínimo index.html, style.css e script.js separados. index.html DEVE conter <link rel="stylesheet" href="style.css"> e <script src="script.js" defer></script>. Entregue implementação completa, coerente e apresentável, nunca uma página mínima ou placeholder.`;
 
   const raw = await tryModels({
     messages: [

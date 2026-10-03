@@ -13,6 +13,7 @@ import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
 import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
 import { routeRequest, estimateChars } from "./lib/modelRouter.js";
 import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, applyFileOperations, generateReadme, readZip } from "./lib/projectUtils.js";
+import { validateArtifact, repairWebConnections, artifactSuccessReply, artifactQualityPrompt } from "./lib/artifactQuality.js";
 import {
   initStore,
   findUserByUsername,
@@ -53,12 +54,14 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
-const SYSTEM_PROMPT = `Você é Kira, assistente direta. Responda no idioma da última mensagem.
+const SYSTEM_PROMPT = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
 Conversa: responda de forma útil e concisa.
-Código novo: use create_document e entregue os arquivos necessários.
-Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos.
+Código novo: use create_document. Entregue TODOS os arquivos necessários, completos e conectados entre si. Nunca entregue uma versão mínima quando o usuário pediu um projeto completo.
+Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar.
+Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos. Preserve a stack.
+Não anuncie genericamente "criei uma landing page". O servidor apresentará a lista exata dos arquivos criados.
 Imagens: use generate_image quando pedirem geração. Home Assistant: só use control_device quando pedido.
-Preserve a stack de projetos existentes. Markdown puro; sem HTML decorativo.`;
+Markdown puro; sem HTML decorativo.`;
 
 function publicUser(user) {
   return { id: user.id, username: user.username };
@@ -424,7 +427,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
       const aiContents = editingArtifact
         ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }] }]
-        : contents;
+        : (wantsArtifact
+          ? [...history, { role: "user", parts: [{ text: artifactQualityPrompt(textMessage) }] }]
+          : contents);
       const data = reply ? null : await callGemini({
         systemInstruction: SYSTEM_PROMPT,
         contents: aiContents,
@@ -447,21 +452,41 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
         reply=`Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
       } else if (functionCall?.name === "create_document") {
-        const args = functionCall.args || {};
-        if (Array.isArray(args.files) && args.files.length > 0) {
-          artifactName = args.projectName || "projeto";
-          artifactFiles = args.files
-            .filter((file) => file?.path && typeof file.content === "string" && file.content.length > 0)
-            .map((file) => ({ path: file.path, content: file.content, language: file.language || "" }));
-          if (artifactFiles.length === 0) throw new Error("Gemini retornou create_document sem arquivos válidos.");
-          reply = `Preparei o artifact **${artifactName}** com ${artifactFiles.length} arquivo(s). Abra para visualizar o projeto.`;
-        } else {
-          documentName = args.filename || "documento.md";
-          documentContent = args.content || "";
-          artifactName = args.projectName || documentName;
-          artifactFiles = [{ path: documentName, content: documentContent, language: "" }];
-          reply = `Preparei o artifact **${artifactName}**. Abra para visualizar.`;
+        const parseArtifactArgs = (args={}) => ({
+          name: args.projectName || "projeto",
+          files: Array.isArray(args.files)
+            ? args.files.filter(f=>f?.path && typeof f.content==="string" && f.content.trim())
+                .map(f=>({path:String(f.path).trim(),content:f.content,language:f.language||""}))
+            : []
+        });
+
+        let parsed=parseArtifactArgs(functionCall.args||{});
+        parsed.files=repairWebConnections(parsed.files);
+        let quality=validateArtifact(parsed.files,textMessage);
+
+        // Uma segunda tentativa só quando a primeira realmente falhou no contrato estrutural.
+        if(!quality.ok){
+          console.warn("[artifact-quality] primeira tentativa rejeitada:", quality.issues.join("; "));
+          const retryData=await callGemini({
+            systemInstruction:SYSTEM_PROMPT,
+            contents:[{role:"user",parts:[{text:artifactQualityPrompt(textMessage,quality.issues)}]}],
+            forceFunctionName:"create_document"
+          });
+          const retryCall=(retryData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
+          if(retryCall?.name==="create_document") parsed=parseArtifactArgs(retryCall.args||{});
+          parsed.files=repairWebConnections(parsed.files);
+          quality=validateArtifact(parsed.files,textMessage);
         }
+
+        if(!quality.ok){
+          const e=new Error(`Artifact reprovado no controle de qualidade: ${quality.issues.join("; ")}`);
+          e.code="artifact_quality_failed";
+          throw e;
+        }
+
+        artifactName=parsed.name;
+        artifactFiles=quality.files;
+        reply=artifactSuccessReply(artifactFiles);
       } else if (functionCall?.name === "control_device") {
         const { domain, service, entity_id } = functionCall.args || {};
         try {
@@ -484,10 +509,13 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage });
+            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: artifactQualityPrompt(textMessage) });
             artifactName = artifact.projectName;
-            artifactFiles = artifact.files;
-            reply = `Preparei o artifact **${artifactName}** com ${artifactFiles.length} arquivo(s). Abra para visualizar o projeto.`;
+            artifactFiles = repairWebConnections(artifact.files);
+            const quality=validateArtifact(artifactFiles,textMessage);
+            if(!quality.ok) throw new Error(`Groq Artifact reprovado: ${quality.issues.join("; ")}`);
+            artifactFiles=quality.files;
+            reply = artifactSuccessReply(artifactFiles);
           } else {
             reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage });
           }

@@ -113,7 +113,10 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
           functionCallingConfig: { mode: "ANY", allowedFunctionNames: [forceFunctionName] }
         }
       } : {}),
-      generationConfig: { temperature: 0.7, maxOutputTokens: 8192 }
+      generationConfig: {
+        temperature: forceFunctionName ? 0.25 : 0.65,
+        maxOutputTokens: forceFunctionName ? 16384 : 8192
+      }
     })
   });
 
