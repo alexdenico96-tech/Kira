@@ -1,21 +1,27 @@
 import { useEffect, useState } from "react";
 
-const STORAGE_KEY = "kira_theme";
+const THEME_KEY = "kira_theme";
 
-function getInitialTheme() {
-  const saved = localStorage.getItem(STORAGE_KEY);
+function initialTheme() {
+  const saved = localStorage.getItem(THEME_KEY);
   if (saved === "light" || saved === "dark") return saved;
   return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
 }
 
+function applyTheme(theme) {
+  const root = document.documentElement;
+  root.dataset.theme = theme;
+  root.classList.toggle("dark", theme === "dark");
+  root.classList.toggle("light", theme === "light");
+  root.style.colorScheme = theme;
+}
+
 export function useTheme() {
-  const [theme, setTheme] = useState(getInitialTheme);
+  const [theme, setTheme] = useState(initialTheme);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem(STORAGE_KEY, theme);
-    const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute("content", theme === "light" ? "#F5F7FB" : "#060B18");
+    applyTheme(theme);
+    localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
 
   return [theme, setTheme];

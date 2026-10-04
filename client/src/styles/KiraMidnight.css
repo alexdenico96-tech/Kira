@@ -1,8 +1,72 @@
-:root{color-scheme:dark;--kira-bg:#030814;--kira-sidebar:#050d1b;--kira-panel:#071225;--kira-panel2:#0a1930;--kira-line:#142844;--kira-accent:#3b82f6;--kira-accent2:#60a5fa;--kira-text:#f1f5f9;--kira-muted:#8da2bf}
-html,body,#root{background:var(--kira-bg)!important;color:var(--kira-text);}
-body{background-image:radial-gradient(circle at 65% -20%,rgba(37,99,235,.12),transparent 34%),linear-gradient(180deg,#030814 0%,#040b18 100%)!important;}
-.bg-ink{background-color:var(--kira-bg)!important}.bg-panel{background-color:var(--kira-panel)!important}.bg-panel\/95{background-color:rgba(7,18,37,.97)!important}.bg-panel2{background-color:var(--kira-panel2)!important}
-.border-line{border-color:var(--kira-line)!important}.text-paper{color:var(--kira-text)!important}.text-mist{color:var(--kira-muted)!important}.text-neon{color:var(--kira-accent2)!important}.bg-neon\/10{background-color:rgba(59,130,246,.10)!important}.bg-neon\/15{background-color:rgba(59,130,246,.15)!important}
-.hover\:text-neon:hover{color:var(--kira-accent2)!important}.hover\:border-neon\/50:hover{border-color:rgba(96,165,250,.5)!important}.hover\:bg-panel2:hover{background-color:var(--kira-panel2)!important}
-button,input,textarea,select{transition:border-color .18s ease,background-color .18s ease,color .18s ease,box-shadow .18s ease}input:focus,textarea:focus,select:focus{border-color:rgba(59,130,246,.55)!important;box-shadow:0 0 0 3px rgba(37,99,235,.10)}
-.artifact-workspace{box-shadow:-18px 0 50px rgba(0,0,0,.22)}
+:root,
+html[data-theme="dark"]{
+  color-scheme:dark;
+  --kira-bg:#030814;
+  --kira-sidebar:#050d1b;
+  --kira-panel:#071225;
+  --kira-panel2:#0a1930;
+  --kira-line:#142844;
+  --kira-accent:#3b82f6;
+  --kira-accent2:#60a5fa;
+  --kira-text:#f1f5f9;
+  --kira-muted:#8da2bf;
+  --kira-overlay:rgba(0,0,0,.66);
+  --kira-shadow:rgba(0,0,0,.24);
+  --kira-body-glow:rgba(37,99,235,.12);
+}
+html[data-theme="light"],
+html.light{
+  color-scheme:light;
+  --kira-bg:#f5f8fd;
+  --kira-sidebar:#eef4fb;
+  --kira-panel:#ffffff;
+  --kira-panel2:#f3f7fc;
+  --kira-line:#d8e3f0;
+  --kira-accent:#2563eb;
+  --kira-accent2:#1d4ed8;
+  --kira-text:#0b172a;
+  --kira-muted:#60738d;
+  --kira-overlay:rgba(15,23,42,.34);
+  --kira-shadow:rgba(15,23,42,.10);
+  --kira-body-glow:rgba(37,99,235,.09);
+}
+
+html,body,#root{background:var(--kira-bg)!important;color:var(--kira-text)!important;}
+body{
+  background-image:
+    radial-gradient(circle at 65% -20%,var(--kira-body-glow),transparent 34%),
+    linear-gradient(180deg,var(--kira-bg) 0%,var(--kira-bg) 100%)!important;
+}
+.bg-ink{background-color:var(--kira-bg)!important}
+.bg-panel{background-color:var(--kira-panel)!important}
+.bg-panel\/95{background-color:color-mix(in srgb,var(--kira-panel) 97%,transparent)!important}
+.bg-panel2{background-color:var(--kira-panel2)!important}
+.bg-panel2\/50{background-color:color-mix(in srgb,var(--kira-panel2) 50%,transparent)!important}
+.border-line{border-color:var(--kira-line)!important}
+.text-paper{color:var(--kira-text)!important}
+.text-mist{color:var(--kira-muted)!important}
+.text-neon{color:var(--kira-accent2)!important}
+.bg-neon{background-color:var(--kira-accent)!important}
+.bg-neon\/10{background-color:color-mix(in srgb,var(--kira-accent) 10%,transparent)!important}
+.bg-neon\/15{background-color:color-mix(in srgb,var(--kira-accent) 15%,transparent)!important}
+.hover\:text-neon:hover{color:var(--kira-accent2)!important}
+.hover\:border-neon\/50:hover{border-color:color-mix(in srgb,var(--kira-accent2) 50%,transparent)!important}
+.hover\:bg-panel2:hover{background-color:var(--kira-panel2)!important}
+
+html[data-theme="light"] .shadow-black\/20,
+html.light .shadow-black\/20{--tw-shadow-color:rgba(15,23,42,.08)!important}
+html[data-theme="light"] .bg-black\/60,
+html.light .bg-black\/60{background-color:var(--kira-overlay)!important}
+html[data-theme="light"] .bg-black\/75,
+html.light .bg-black\/75{background-color:var(--kira-overlay)!important}
+html[data-theme="light"] pre,
+html[data-theme="light"] code{color:inherit}
+html[data-theme="light"] ::selection{background:rgba(37,99,235,.18);color:#0b172a}
+
+button,input,textarea,select{
+  transition:border-color .18s ease,background-color .18s ease,color .18s ease,box-shadow .18s ease
+}
+input:focus,textarea:focus,select:focus{
+  border-color:color-mix(in srgb,var(--kira-accent) 55%,transparent)!important;
+}
+.artifact-workspace{box-shadow:-18px 0 50px var(--kira-shadow)}
