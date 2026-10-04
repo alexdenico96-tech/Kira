@@ -145,7 +145,7 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Pergunte alguma coisa"
-          className="flex-1 resize-none bg-transparent outline-none focus:outline-none focus-visible:outline-none text-paper placeholder:text-mist/70 font-body text-[15px] max-h-32"
+          className="flex-1 resize-none appearance-none border-0 ring-0 shadow-none bg-transparent outline-none focus:border-0 focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none text-paper placeholder:text-mist/70 font-body text-[15px] max-h-32" style={{ WebkitAppearance: "none", boxShadow: "none" }}
         />
         <button
           type="submit"

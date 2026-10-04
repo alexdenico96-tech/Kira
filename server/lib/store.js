@@ -68,6 +68,21 @@ export async function initStore() {
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMPTZ;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS disclaimer_version TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS legal_accepted_at TIMESTAMPTZ;`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS legal_acceptances (
+      id BIGSERIAL PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      document_type TEXT NOT NULL,
+      document_version TEXT NOT NULL,
+      document_hash TEXT NOT NULL,
+      accepted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      user_agent TEXT,
+      UNIQUE(user_id, document_type, document_version)
+    );
+  `);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower ON users (lower(email)) WHERE email IS NOT NULL;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id);`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);`);
@@ -137,19 +152,30 @@ export async function findUserByUsername(username) {
   return rows[0] || null;
 }
 
-export async function createUser({ username, email, passwordHash }) {
+export async function createUser({ username, email, passwordHash, legal }) {
+  const client = await pool.connect();
   try {
+    await client.query("BEGIN");
     const id = randomUUID();
-    const { rows } = await pool.query(
-      `INSERT INTO users (id, username, email, password_hash)
-       VALUES ($1, $2, $3, $4)
+    const { rows } = await client.query(
+      `INSERT INTO users (id, username, email, password_hash, terms_version, disclaimer_version, legal_accepted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, now())
        RETURNING id, username, email, created_at AS "createdAt"`,
-      [id, username, email, passwordHash]
+      [id, username, email, passwordHash, legal.termsVersion, legal.disclaimerVersion]
     );
+    await client.query(
+      `INSERT INTO legal_acceptances (user_id, document_type, document_version, document_hash, user_agent)
+       VALUES ($1,'terms',$2,$3,$4), ($1,'disclaimer',$5,$6,$4)`,
+      [id, legal.termsVersion, legal.termsHash, legal.userAgent || null, legal.disclaimerVersion, legal.disclaimerHash]
+    );
+    await client.query("COMMIT");
     return { ...rows[0], passwordHash };
   } catch (err) {
+    await client.query("ROLLBACK");
     if (err.code === "23505") throw new Error(err.constraint === "idx_users_email_lower" ? "EMAIL_TAKEN" : "USERNAME_TAKEN");
     throw err;
+  } finally {
+    client.release();
   }
 }
 

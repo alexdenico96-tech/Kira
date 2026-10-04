@@ -63,6 +63,11 @@ Não anuncie genericamente "criei uma landing page". O servidor apresentará a l
 Imagens: use generate_image quando pedirem geração. Home Assistant: só use control_device quando pedido.
 Markdown puro; sem HTML decorativo.`;
 
+const CURRENT_TERMS_VERSION = "2026-10-04-v1";
+const CURRENT_DISCLAIMER_VERSION = "2026-10-04-v1";
+const CURRENT_TERMS_HASH = "2dd656314486e1e5125440606172ba1c34eb4620efa277908dd35f4aaf58ed64";
+const CURRENT_DISCLAIMER_HASH = "499eef9ed4cc74b5f16d5f2d4a66a9434875772a9d06bb5c103114ee4eb7867d";
+
 function publicUser(user) {
   return { id: user.id, username: user.username };
 }
@@ -71,7 +76,7 @@ function publicUser(user) {
 
 app.post("/api/auth/register", async (req, res) => {
   try {
-    const { username, email, password } = req.body;
+    const { username, email, password, termsAccepted, disclaimerAccepted, termsVersion, disclaimerVersion } = req.body;
     if (!username || !email || !password || password.length < 6) {
       return res.status(400).json({ error: "Usuário, e-mail e senha com no mínimo 6 caracteres são obrigatórios." });
     }
@@ -79,11 +84,29 @@ app.post("/api/auth/register", async (req, res) => {
       return res.status(400).json({ error: "Informe um e-mail válido." });
     }
 
+    if (termsAccepted !== true || disclaimerAccepted !== true) {
+      return res.status(400).json({ error: "É necessário ler e aceitar os Termos e o Aviso Legal para criar uma conta." });
+    }
+    if (termsVersion !== CURRENT_TERMS_VERSION || disclaimerVersion !== CURRENT_DISCLAIMER_VERSION) {
+      return res.status(409).json({ error: "Os documentos legais foram atualizados. Recarregue a página, leia a versão atual e confirme novamente." });
+    }
+
     const passwordHash = await bcrypt.hash(password, 10);
 
     let user;
     try {
-      user = await createUser({ username: username.trim(), email: email.trim().toLowerCase(), passwordHash });
+      user = await createUser({
+        username: username.trim(),
+        email: email.trim().toLowerCase(),
+        passwordHash,
+        legal: {
+          termsVersion: CURRENT_TERMS_VERSION,
+          disclaimerVersion: CURRENT_DISCLAIMER_VERSION,
+          termsHash: CURRENT_TERMS_HASH,
+          disclaimerHash: CURRENT_DISCLAIMER_HASH,
+          userAgent: String(req.get("user-agent") || "").slice(0, 500)
+        }
+      });
     } catch (err) {
       if (err.message === "USERNAME_TAKEN") return res.status(409).json({ error: "Esse nome de usuário já existe. Escolha outro." });
       if (err.message === "EMAIL_TAKEN") return res.status(409).json({ error: "Esse e-mail já está cadastrado." });

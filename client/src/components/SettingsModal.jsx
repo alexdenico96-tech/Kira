@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { X, Sun, Moon, HelpCircle, Gauge, MessageSquareHeart, Send } from "lucide-react";
+import { X, Sun, Moon, HelpCircle, Gauge, MessageSquareHeart, Send, ShieldCheck } from "lucide-react";
+import { LegalContent } from "./LegalDocuments.jsx";
 import { getUsage, sendFeedback } from "../lib/api.js";
 
 const TABS = [
   { id: "appearance", label: "Aparência", icon: Sun },
   { id: "help", label: "Central de ajuda", icon: HelpCircle },
   { id: "usage", label: "Limite de uso", icon: Gauge },
-  { id: "feedback", label: "Comentários", icon: MessageSquareHeart }
+  { id: "feedback", label: "Comentários", icon: MessageSquareHeart },
+  { id: "legal", label: "Termos e privacidade", icon: ShieldCheck }
 ];
 
 function AppearanceTab({ theme, setTheme }) {
@@ -182,6 +184,7 @@ export default function SettingsModal({ open, onClose, theme, setTheme, token })
           {tab === "help" && <HelpTab />}
           {tab === "usage" && <UsageTab token={token} />}
           {tab === "feedback" && <FeedbackTab token={token} />}
+          {tab === "legal" && <LegalContent />}
         </div>
       </div>
     </div>

@@ -46,8 +46,8 @@ export function fileToBase64(file) {
   });
 }
 
-export const register = (username, email, password) =>
-  request("/auth/register", { method: "POST", body: { username, email, password } });
+export const register = (username, email, password, legal = {}) =>
+  request("/auth/register", { method: "POST", body: { username, email, password, ...legal } });
 
 export const login = (username, password) =>
   request("/auth/login", { method: "POST", body: { username, password } });
