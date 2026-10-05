@@ -14,6 +14,7 @@ import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
 import { routeRequest, estimateChars } from "./lib/modelRouter.js";
 import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, applyFileOperations, generateReadme, readZip } from "./lib/projectUtils.js";
 import { validateArtifact, repairWebConnections, artifactSuccessReply, artifactQualityPrompt } from "./lib/artifactQuality.js";
+import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/developerAgent.js";
 import {
   initStore,
   findUserByUsername,
@@ -56,7 +57,7 @@ app.use(express.json({ limit: "20mb" }));
 
 const SYSTEM_PROMPT = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
 Conversa: responda de forma útil e concisa.
-Código novo: use create_document. Entregue TODOS os arquivos necessários, completos e conectados entre si. Nunca entregue uma versão mínima quando o usuário pediu um projeto completo.
+Código novo: use create_document. Para projetos complexos, aja como engenheira de software: planeje arquitetura, preserve a stack solicitada, gere configuração/dependências/entrypoints/componentes necessários e revise imports/exports/caminhos antes de entregar. Entregue TODOS os arquivos completos e conectados. Nunca reduza frameworks a HTML simples.
 Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar.
 Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos. Preserve a stack.
 Não anuncie genericamente "criei uma landing page". O servidor apresentará a lista exata dos arquivos criados.
@@ -451,7 +452,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       const aiContents = editingArtifact
         ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }] }]
         : (wantsArtifact
-          ? [...history, { role: "user", parts: [{ text: artifactQualityPrompt(textMessage) }] }]
+          ? [...history, { role: "user", parts: [{ text: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage) }] }]
           : contents);
       const data = reply ? null : await callGemini({
         systemInstruction: SYSTEM_PROMPT,
@@ -486,23 +487,27 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         let parsed=parseArtifactArgs(functionCall.args||{});
         parsed.files=repairWebConnections(parsed.files);
         let quality=validateArtifact(parsed.files,textMessage);
+        let devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
+        const firstIssues=[...quality.issues,...devQuality.issues];
 
-        // Uma segunda tentativa só quando a primeira realmente falhou no contrato estrutural.
-        if(!quality.ok){
-          console.warn("[artifact-quality] primeira tentativa rejeitada:", quality.issues.join("; "));
+        // Uma única tentativa de reparo: só gasta outra chamada se validação determinística detectar erro real.
+        if(firstIssues.length){
+          console.warn("[developer-agent] primeira tentativa rejeitada:", firstIssues.join("; "));
           const retryData=await callGemini({
             systemInstruction:SYSTEM_PROMPT,
-            contents:[{role:"user",parts:[{text:artifactQualityPrompt(textMessage,quality.issues)}]}],
+            contents:[{role:"user",parts:[{text:isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,firstIssues) : artifactQualityPrompt(textMessage,firstIssues)}]}],
             forceFunctionName:"create_document"
           });
           const retryCall=(retryData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
           if(retryCall?.name==="create_document") parsed=parseArtifactArgs(retryCall.args||{});
           parsed.files=repairWebConnections(parsed.files);
           quality=validateArtifact(parsed.files,textMessage);
+          devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
         }
 
-        if(!quality.ok){
-          const e=new Error(`Artifact reprovado no controle de qualidade: ${quality.issues.join("; ")}`);
+        const finalIssues=[...quality.issues,...devQuality.issues];
+        if(finalIssues.length){
+          const e=new Error(`Artifact reprovado no Developer Agent: ${finalIssues.join("; ")}`);
           e.code="artifact_quality_failed";
           throw e;
         }
@@ -532,11 +537,13 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: artifactQualityPrompt(textMessage) });
+            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage) });
             artifactName = artifact.projectName;
             artifactFiles = repairWebConnections(artifact.files);
             const quality=validateArtifact(artifactFiles,textMessage);
-            if(!quality.ok) throw new Error(`Groq Artifact reprovado: ${quality.issues.join("; ")}`);
+            const devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(artifactFiles,textMessage) : {ok:true,issues:[]};
+            const issues=[...quality.issues,...devQuality.issues];
+            if(issues.length) throw new Error(`Groq Artifact reprovado: ${issues.join("; ")}`);
             artifactFiles=quality.files;
             reply = artifactSuccessReply(artifactFiles);
           } else {

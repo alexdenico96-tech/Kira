@@ -12,7 +12,7 @@ export function classifyRequest({ message="", image, audio, editingArtifact=fals
 export function routeRequest(input) {
   const task = classifyRequest(input);
   const openai = Boolean(process.env.OPENAI_API_KEY);
-  const groq = Boolean(process.env.GROQ_API_KEY);
+  const groq = Boolean(process.env.GROQ_API_KEYS || process.env.GROQ_API_KEY);
   const gemini = Boolean(process.env.GEMINI_API_KEYS || process.env.GEMINI_API_KEY);
   let providers;
   if (task === "chat_small") providers = [

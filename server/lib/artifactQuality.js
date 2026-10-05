@@ -1,7 +1,8 @@
 const WEB_HINT = /\b(site|website|landing\s*page|p[aá]gina|html|css|javascript|js|frontend|loja|portf[oó]lio)\b/i;
+const FRAMEWORK_HINT = /\b(react|vite|next(?:\.js)?|vue|angular|svelte|typescript|tsx)\b/i;
 
 export function isWebProjectRequest(message=""){
-  return WEB_HINT.test(String(message));
+  return WEB_HINT.test(String(message)) && !FRAMEWORK_HINT.test(String(message));
 }
 
 function getFile(files, name){
@@ -83,7 +84,8 @@ export function artifactQualityPrompt(message, issues=[]){
 
 REQUISITOS DE QUALIDADE OBRIGATÓRIOS:
 - Entregue um projeto completo e utilizável, não uma demonstração mínima.
-- Se for site HTML/CSS/JavaScript, crie obrigatoriamente index.html, style.css e script.js.
+- Se for site HTML/CSS/JavaScript puro, crie index.html, style.css e script.js.
+- Se o usuário pedir React/Vite/Next/TypeScript ou outra framework, PRESERVE a stack e crie a estrutura real dela; não force style.css/script.js na raiz.
 - index.html deve importar style.css com <link rel="stylesheet" href="style.css">.
 - index.html deve importar script.js com <script src="script.js" defer></script>.
 - Todos os seletores/classes/IDs usados entre HTML, CSS e JS devem ser coerentes.

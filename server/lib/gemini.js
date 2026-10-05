@@ -27,7 +27,7 @@ const IMAGE_TOOL = {
 const DOCUMENT_TOOL = {
   name: "create_document",
   description:
-    "Cria um artifact de projeto para download e visualização. Pode conter um ou vários arquivos e subpastas. Use para código, sites, apps, documentos, planos técnicos ou qualquer conteúdo que o usuário queira criar/salvar. Se o pedido exigir vários arquivos, devolva TODOS no mesmo artifact. Respeite a tecnologia pedida pelo usuário; quando ele não especificar, escolha ou sugira uma stack adequada sem trocar silenciosamente a tecnologia de um projeto existente.",
+    "Cria um artifact completo de projeto. Para apps/frameworks, gere a arquitetura real: package.json, configuração, entrypoints, src/, componentes, páginas, estilos e demais arquivos necessários. Todos os imports/exports/caminhos/dependências devem ser coerentes. Nunca reduza React/Vite/Next/TypeScript a HTML simples. Nunca entregue stubs/TODOs no lugar de funcionalidades solicitadas. Devolva TODOS os arquivos no mesmo artifact.",
   parameters: {
     type: "OBJECT",
     properties: {
