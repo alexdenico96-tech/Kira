@@ -1,3 +1,4 @@
+// KIRA_GEMINI_DISCOVERY_V1
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -8,7 +9,7 @@ function getApiKeys() {
 }
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-flash-latest";
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta";
 
 const HOME_ASSISTANT_URL = process.env.HOME_ASSISTANT_URL;
 const HOME_ASSISTANT_TOKEN = process.env.HOME_ASSISTANT_TOKEN;
@@ -100,8 +101,8 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName }) {
-  const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
+async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName, model }) {
+  const res = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : 18000)))),
     headers: { "Content-Type": "application/json" },
@@ -140,8 +141,55 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
 
 let keyIndex = 0;
 let overloadUntil = 0;
+const discoveryCache = new Map();
+const invalidModels = new Map();
+const DISCOVERY_TTL_MS = 30 * 60 * 1000;
+const INVALID_TTL_MS = 30 * 60 * 1000;
 
-// 503 é sobrecarga do modelo, não da chave. Não repetir a mesma solicitação em todas as chaves.
+function normalizedModel(model) {
+  return String(model || "").replace(/^models\//, "").trim();
+}
+
+async function discoverGeminiModels(apiKey) {
+  const cached = discoveryCache.get(apiKey);
+  if (cached && cached.expires > Date.now()) return cached.models;
+  const models = [];
+  let pageToken = "";
+  for (let page = 0; page < 3; page++) {
+    const url = new URL(`${GEMINI_BASE}/models`);
+    url.searchParams.set("key", apiKey);
+    url.searchParams.set("pageSize", "100");
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+    const response = await fetch(url, { signal: AbortSignal.timeout(3500) });
+    if (!response.ok) {
+      const error = new Error(`models.list retornou HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    const data = await response.json();
+    for (const entry of data.models || []) {
+      const methods = entry.supportedGenerationMethods || [];
+      const model = normalizedModel(entry.name);
+      if (methods.includes("generateContent") && model && !/embedding|imagen|veo|tts|audio|live/i.test(model)) models.push(model);
+    }
+    pageToken = data.nextPageToken || "";
+    if (!pageToken) break;
+  }
+  const unique = [...new Set(models)];
+  discoveryCache.set(apiKey, { models: unique, expires: Date.now() + DISCOVERY_TTL_MS });
+  console.info(`[kira-gemini] discovery count=${unique.length}`);
+  return unique;
+}
+
+function chooseAlternatives(models, failedModel) {
+  const configured = (process.env.KIRA_GEMINI_FALLBACK_MODELS || "")
+    .split(",").map(normalizedModel).filter(Boolean);
+  const available = new Set(models);
+  const preferred = [...configured, ...models.filter(m => /flash/i.test(m) && !/lite|preview|exp/i.test(m)), ...models];
+  return [...new Set(preferred)].filter(m => m !== failedModel && available.has(m) && (invalidModels.get(m) || 0) < Date.now()).slice(0, 2);
+}
+
+// 404: consultar a lista real da chave. 503: não repetir, usar fallback existente.
 export async function callGemini({ systemInstruction, contents, forceFunctionName }) {
   const keys = getApiKeys();
   if (!keys.length) { const e = new Error("GEMINI_API_KEY não configurada."); e.code = "missing_key"; throw e; }
@@ -151,15 +199,36 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
   }
   const key = keys[keyIndex++ % keys.length];
   const started = Date.now();
-  try {
-    const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName });
-    console.info(`[kira-provider] provider=gemini status=ok duration_ms=${Date.now()-started}`);
+  const primary = normalizedModel(GEMINI_MODEL);
+  const attempt = async (model) => {
+    const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName, model });
+    Object.defineProperty(data, "_kiraModel", { value: model, enumerable: false });
+    console.info(`[kira-provider] provider=gemini model=${model} status=ok duration_ms=${Date.now()-started}`);
     return data;
+  };
+  try {
+    if ((invalidModels.get(primary) || 0) < Date.now()) return await attempt(primary);
+    const e = new Error("Modelo Gemini previamente retornou 404."); e.status = 404; throw e;
   } catch (err) {
+    if (err.status === 404) {
+      invalidModels.set(primary, Date.now() + INVALID_TTL_MS);
+      try {
+        const models = await discoverGeminiModels(key);
+        for (const model of chooseAlternatives(models, primary)) {
+          try { return await attempt(model); }
+          catch (candidateErr) {
+            if (candidateErr.status === 404) { invalidModels.set(model, Date.now() + INVALID_TTL_MS); continue; }
+            err = candidateErr; break;
+          }
+        }
+      } catch (discoveryError) {
+        console.warn(`[kira-gemini] discovery_failed status=${discoveryError.status || "error"}`);
+      }
+    }
     if (err.status === 503 || err.code === "UNAVAILABLE") {
       overloadUntil = Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000));
     }
-    console.warn(`[kira-provider] provider=gemini status=${err.status || err.name || "error"} duration_ms=${Date.now()-started}`);
+    console.warn(`[kira-provider] provider=gemini model=${primary} status=${err.status || err.name || "error"} duration_ms=${Date.now()-started}`);
     throw err;
   }
 }

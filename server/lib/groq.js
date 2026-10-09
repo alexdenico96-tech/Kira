@@ -43,7 +43,7 @@ async function requestGroq({ apiKey, model, messages, maxTokens = 4096, jsonMode
   return data.choices?.[0]?.message?.content?.trim() || "";
 }
 
-async function tryModels(request, onSelectedModel, preferredModel) {
+async function tryModels(request, onSelectedModel, preferredModel, onlyPreferred = false) {
   if (!GROQ_ENABLED) {
     const err = new Error("Groq não configurada.");
     err.code = "not_configured";
@@ -53,8 +53,8 @@ async function tryModels(request, onSelectedModel, preferredModel) {
   const keys = getGroqKeys();
   const start = groqKeyIndex++ % keys.length;
   let lastError;
-  const models = getGroqModels();
-  for (const model of preferredModel ? [...new Set([preferredModel,...models])] : models) {
+  const models = getGroqModels().filter(m => !/llama-3\.3-70b-versatile/i.test(m)); // KIRA_ARTIFACT_REPAIR_V1: evita modelo aposentado
+  for (const model of onlyPreferred && preferredModel ? [preferredModel] : preferredModel ? [...new Set([preferredModel,...models])] : models) {
     let invalidModel = false;
     for (let i = 0; i < keys.length; i++) {
       const apiKey = keys[(start + i) % keys.length];
@@ -86,7 +86,7 @@ export async function callGroqFallback({ systemInstruction, message, onSelectedM
   return content || "Não consegui gerar uma resposta agora.";
 }
 
-export async function callGroqArtifactFallback({ systemInstruction, message, preferredModel }) {
+export async function callGroqArtifactFallback({ systemInstruction, message, preferredModel, onSelectedModel }) {
   const artifactInstruction = `${systemInstruction}\n\nVocê está no modo de criação de Artifact. Responda SOMENTE com um objeto JSON válido, sem markdown e sem texto antes/depois, no formato: {"projectName":"nome-do-projeto","files":[{"path":"index.html","content":"conteúdo completo","language":"html"}]}. Inclua TODOS os arquivos necessários pedidos pelo usuário. Cada arquivo deve ter path e content completos. Não diga que criou arquivos se files estiver vazio.
 Para qualquer site HTML/CSS/JavaScript puro (NÃO APIs Node/Express ou backends), gere no mínimo index.html, style.css e script.js separados. index.html DEVE conter <link rel="stylesheet" href="style.css"> e <script src="script.js" defer></script>. Entregue implementação completa, coerente e apresentável, nunca uma página mínima ou placeholder.`;
 
@@ -97,7 +97,7 @@ Para qualquer site HTML/CSS/JavaScript puro (NÃO APIs Node/Express ou backends)
     ],
     maxTokens: 8192,
     jsonMode: true
-  }, undefined, preferredModel);
+  }, onSelectedModel, preferredModel);
 
   let parsed;
   try {
@@ -123,6 +123,29 @@ Para qualquer site HTML/CSS/JavaScript puro (NÃO APIs Node/Express ou backends)
   return { projectName: String(parsed.projectName || "projeto").trim() || "projeto", files };
 }
 
+
+// KIRA_TARGETED_PACKAGE_REPAIR_V1
+// Limita o contexto e a saída: nunca solicita regeneração do projeto inteiro.
+export async function callGroqPackageJsonRepair({originalContent,projectRequest,onSelectedModel}){
+  const content=String(originalContent||'');
+  // Limite de tamanho evita exceder TPM com arquivos indevidamente gigantes.
+  const maxInput=2800;
+  const prompt='Corrija SOMENTE este package.json para que seja JSON válido. Preserve scripts, dependências e a stack Node/Express solicitada. Responda somente um objeto JSON com a chave packageJson contendo o OBJETO do package.json (não uma string). Não inclua código de outros arquivos.\nPedido resumido: '+String(projectRequest||'').slice(0,600)+'\nConteúdo original (pode estar malformado):\n'+content.slice(0,maxInput);
+  const raw=await tryModels({
+    messages:[{role:'system',content:'Você corrige arquivos package.json. Retorne JSON válido no formato {"packageJson":{"name":"app","version":"1.0.0","scripts":{"start":"node src/server.js"},"dependencies":{}}}. Preserve as dependências presentes e não invente arquivos.'},{role:'user',content:prompt}],
+    maxTokens:1100,
+    jsonMode:true
+  },onSelectedModel,'openai/gpt-oss-120b',true);
+  let response;
+  try{response=JSON.parse(raw);}catch{const e=new Error('Reparo retornou JSON inválido');e.code='invalid_repair_json';throw e;}
+  const pkg=response?.packageJson;
+  if(!pkg||typeof pkg!=='object'||Array.isArray(pkg)||!pkg.scripts||typeof pkg.scripts!=='object'||!Object.keys(pkg.scripts).length){
+    const e=new Error('Reparo sem scripts válidos');e.code='invalid_package_structure';throw e;
+  }
+  const fixed=JSON.stringify(pkg,null,2)+'\n';
+  JSON.parse(fixed);
+  return fixed;
+}
 
 export async function callGroqArtifactUpdateFallback({ systemInstruction, message }) {
   const instruction = `${systemInstruction}

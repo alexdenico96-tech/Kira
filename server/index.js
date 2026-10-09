@@ -1,3 +1,4 @@
+// KIRA_GEMINI_DISCOVERY_V1
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -8,7 +9,7 @@ import { signToken, requireAuth } from "./lib/auth.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
 import { callGemini, buildPollinationsUrl, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
-import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, GROQ_ENABLED } from "./lib/groq.js";
+import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
 import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
 import { classifyKiraIntent } from "./lib/intentRouter.js";
@@ -18,6 +19,10 @@ import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, 
 import { validateArtifact, repairWebConnections, artifactSuccessReply, artifactQualityPrompt } from "./lib/artifactQuality.js";
 import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/developerAgent.js";
 import { inspectProjectFiles } from "./lib/qualityGate.js";
+import { inspectProjectSyntax } from "./lib/syntaxGate.js";
+// KIRA_PACKAGE_JSON_REPAIR_V1_INTEGRATION
+import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
+import { repairArtifactNewlines } from "./lib/artifactNewlineRepair.js"; // KIRA_PHASE22_PASSIVE_SYNTAX_GATE
 import {
   initStore,
   findUserByUsername,
@@ -240,7 +245,7 @@ function friendlyGeminiError(err) {
   if (err.code === "missing_key") return "GEMINI_API_KEY não configurada.";
   if (err.status === 429 || err.code === "RESOURCE_EXHAUSTED") return "Limite gratuito do Gemini atingido por agora.";
   if (err.status === 401 || err.status === 403) return "Chave da API Gemini rejeitada.";
-  if (err.status === 404) return "Modelo Gemini configurado não existe — tente GEMINI_MODEL=gemini-flash-latest.";
+  if (err.status === 404) return "Nenhum modelo Gemini compatível ficou disponível para esta chave; confira os modelos autorizados.";
   return "Não consegui falar com a IA agora.";
 }
 
@@ -488,7 +493,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         contents: aiContents,
         forceFunctionName: editingArtifact ? "update_artifact" : (wantsArtifact ? "create_document" : undefined)
       });
-      if(data){selectedProvider="gemini"; selectedModel=GEMINI_MODEL;}
+      if(data){selectedProvider="gemini"; selectedModel=data._kiraModel || GEMINI_MODEL;}
       const candidate = data?.candidates?.[0];
       const parts = candidate?.content?.parts || [];
       const functionCall = parts.find((p) => p.functionCall)?.functionCall;
@@ -515,7 +520,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         });
 
         let parsed=parseArtifactArgs(functionCall.args||{});
-        parsed.files=repairWebConnections(parsed.files);
+        parsed.files=repairPackageJsonNewlines(repairWebConnections(parsed.files));
         let quality=validateArtifact(parsed.files,textMessage);
         let devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
         const firstIssues=[...quality.issues,...devQuality.issues];
@@ -530,7 +535,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
           });
           const retryCall=(retryData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
           if(retryCall?.name==="create_document") parsed=parseArtifactArgs(retryCall.args||{});
-          parsed.files=repairWebConnections(parsed.files);
+          parsed.files=repairPackageJsonNewlines(repairWebConnections(parsed.files));
           quality=validateArtifact(parsed.files,textMessage);
           devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
         }
@@ -568,14 +573,57 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
             // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-20b" });
+            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-20b", onSelectedModel: (model) => { selectedModel=model; } });
             artifactName = artifact.projectName;
-            artifactFiles = repairWebConnections(artifact.files);
+            artifactFiles = repairPackageJsonNewlines(repairWebConnections(artifact.files));
             const quality=validateArtifact(artifactFiles,textMessage);
             const devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(artifactFiles,textMessage) : {ok:true,issues:[]};
-            const issues=[...quality.issues,...devQuality.issues];
-            if(issues.length) throw new Error(`Groq Artifact reprovado: ${issues.join("; ")}`);
-            artifactFiles=quality.files;
+            let issues=[...quality.issues,...devQuality.issues];
+             // KIRA_TARGETED_PACKAGE_REPAIR_V1
+             // Conserta apenas package.json, sem enviar os outros arquivos nem regenerar o projeto.
+             if(issues.length===1 && issues[0]==="package.json contém JSON inválido"){
+               const pkg=artifactFiles.find(f=>String(f.path).replace(/\\/g,"/")==="package.json");
+               if(pkg){
+                 try{
+                   const fixed=await callGroqPackageJsonRepair({
+                     originalContent:pkg.content,
+                     projectRequest:textMessage,
+                     onSelectedModel:(model)=>{selectedModel=model;}
+                   });
+                   const candidate=artifactFiles.map(f=>f===pkg?{...f,content:fixed}:f);
+                   const checked=analyzeProject(candidate,textMessage);
+                   const basic=validateArtifact(candidate,textMessage);
+                   if(checked.ok && basic.ok){
+                     artifactFiles=candidate;
+                     issues=[];
+                     console.info('[kira-package-targeted] status=repaired');
+                   }else{
+                     console.warn('[kira-package-targeted] status=rejected reason=validation_failed');
+                   }
+                 }catch(packageError){
+                   console.warn('[kira-package-targeted] status=failed code='+String(packageError.code||packageError.status||'unknown'));
+                 }
+               }
+             }
+             if(issues.length===1 && issues[0]==="package.json contém JSON inválido"){
+               throw new Error('package.json inválido; reparo pontual não aprovado. Projeto não salvo.');
+             }
+            // KIRA_ARTIFACT_REPAIR_V1: uma tentativa de regeneração guiada, sem alterar arquivos localmente.
+            if(issues.length){
+              console.warn(`[kira-artifact] validation_failed count=${issues.length}; retry=1`);
+              const retryMessage = `${isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage)}\\n\\nA tentativa anterior foi rejeitada: ${issues.join('; ')}. Regenere o projeto COMPLETO em JSON válido. IMPORTANTE: package.json deve ser uma string de conteúdo contendo JSON.parse válido, sem comentários, sem markdown, com aspas duplas, sem vírgulas finais e com scripts/dependências coerentes.`;
+              const repaired = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: retryMessage, preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-20b", onSelectedModel: (model) => { selectedModel=model; } });
+              const retryFiles = repairPackageJsonNewlines(repairWebConnections(repaired.files));
+              const retryQuality = validateArtifact(retryFiles,textMessage);
+              const retryDev = isComplexProjectRequest(textMessage) ? analyzeProject(retryFiles,textMessage) : {ok:true,issues:[]};
+              const retryIssues = [...retryQuality.issues,...retryDev.issues];
+              if(retryIssues.length) throw new Error(`Groq Artifact reprovado após reparo: ${retryIssues.join('; ')}`);
+              artifactName=repaired.projectName;
+              artifactFiles=retryQuality.files;
+              console.info(`[kira-artifact] retry=1 status=ok files=${artifactFiles.length}`);
+            } else {
+              artifactFiles=quality.files;
+            }
             reply = artifactSuccessReply(artifactFiles);
           } else {
             reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage, onSelectedModel: (model) => { selectedModel=model; } });
@@ -597,7 +645,16 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
     }
 
-    if (reply && selectedProvider) console.info(`[kira-provider] selected=${selectedProvider} model=${selectedModel || "unknown"} intent=${intentKind} complexity=${complexity}`);
+    if (reply && selectedProvider) console.info(`[kira-provider] selected=${selectedProvider} model=${selectedModel || "not-reported"} intent=${intentKind} complexity=${complexity}`);
+    // KIRA_ARTIFACT_NEWLINE_REPAIR_V1_INTEGRATION
+    if (artifactFiles?.length) {
+      const repairedNewlines = repairArtifactNewlines(artifactFiles, inspectProjectSyntax);
+      artifactFiles = repairedNewlines.files;
+      if (repairedNewlines.fixed) {
+        console.info(`[kira-newline] repaired_files=${repairedNewlines.fixed} tokens=${repairedNewlines.tokens}`);
+        reply = artifactSuccessReply(artifactFiles);
+      }
+    }
     // Quality Gate fase 2: diagnóstico passivo, sem mudar a geração ou a persistência.
     if (artifactFiles?.length) {
       try {
@@ -608,6 +665,14 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       } catch (qualityError) {
         console.warn('[kira-quality] validator_error='+qualityError.message);
       }
+    }
+    if (artifactFiles?.length) {
+      try {
+        const syntax = inspectProjectSyntax(artifactFiles);
+        console.info(`[kira-syntax] checked=${syntax.checked} skipped=${syntax.skipped} issues=${syntax.issues.length} warnings=${syntax.warnings.length}`);
+        for (const issue of syntax.issues.slice(0, 12)) console.warn(`[kira-syntax] issue=${issue}`);
+        for (const warning of syntax.warnings.slice(0, 12)) console.warn(`[kira-syntax] warning=${warning}`);
+      } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); }
     }
     if (artifactFiles?.length && !responseArtifactId) {
       const createdArtifact = await createArtifactVersioned(req.user.id, conv.id, artifactName || "Artifact", artifactFiles, "Criação inicial");
