@@ -1,8 +1,10 @@
 const WEB_HINT = /\b(site|website|landing\s*page|p[aá]gina|html|css|javascript|js|frontend|loja|portf[oó]lio)\b/i;
+// APIs Node/Express e projetos backend não são sites estáticos, mesmo usando JavaScript.
+const BACKEND_HINT = /\b(express|node(?:\.js)?|api\s+rest|rest\s+api|backend|back-end|postgres(?:ql)?|servidor\s+(?:node|express)|server\s+(?:node|express))\b/i;
 const FRAMEWORK_HINT = /\b(react|vite|next(?:\.js)?|vue|angular|svelte|typescript|tsx)\b/i;
 
 export function isWebProjectRequest(message=""){
-  return WEB_HINT.test(String(message)) && !FRAMEWORK_HINT.test(String(message));
+  return WEB_HINT.test(String(message)) && !FRAMEWORK_HINT.test(String(message)) && !BACKEND_HINT.test(String(message));
 }
 
 function getFile(files, name){
@@ -86,8 +88,8 @@ REQUISITOS DE QUALIDADE OBRIGATÓRIOS:
 - Entregue um projeto completo e utilizável, não uma demonstração mínima.
 - Se for site HTML/CSS/JavaScript puro, crie index.html, style.css e script.js.
 - Se o usuário pedir React/Vite/Next/TypeScript ou outra framework, PRESERVE a stack e crie a estrutura real dela; não force style.css/script.js na raiz.
-- index.html deve importar style.css com <link rel="stylesheet" href="style.css">.
-- index.html deve importar script.js com <script src="script.js" defer></script>.
+- APENAS para HTML/CSS/JS puro: index.html deve importar style.css com <link rel="stylesheet" href="style.css">.
+- APENAS para HTML/CSS/JS puro: index.html deve importar script.js com <script src="script.js" defer></script>.
 - Todos os seletores/classes/IDs usados entre HTML, CSS e JS devem ser coerentes.
 - Não coloque CSS ou JavaScript inline se existem arquivos separados.
 - Implemente todas as seções, textos, botões e interações pedidas.
@@ -96,7 +98,8 @@ REQUISITOS DE QUALIDADE OBRIGATÓRIOS:
 - JavaScript deve implementar as interações pedidas; carrinho/login/filtros não podem ser apenas botões decorativos quando foram solicitados.
 - Se o usuário pedir uma quantidade mínima (ex.: 10 carros), cumpra a quantidade integralmente.
 - Para imagens remotas, use URLs HTTPS válidas e inclua alt text; não invente caminhos locais para imagens inexistentes.
-- Antes de responder, revise mentalmente os imports, caminhos, seletores, IDs e dependências entre os arquivos.
+- Antes de responder, revise imports, exports, caminhos, seletores, IDs, dependências, scripts de execução e arquivos referenciados.
+- Nunca encerre arquivos no meio de funções, JSX, JSON ou blocos de código. Não use TODO, pseudocódigo ou componentes fictícios para funcionalidades solicitadas.
 ${issues.length?`A tentativa anterior falhou nestes pontos: ${issues.join("; ")}. Corrija todos eles.`:""}
 Use create_document e devolva TODOS os arquivos necessários no mesmo artifact.`;
 }

@@ -103,7 +103,6 @@ function sleep(ms) {
 async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName }) {
   const res = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
     method: "POST",
-    signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : 18000)))),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -139,27 +138,47 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
 }
 
 let keyIndex = 0;
-let overloadUntil = 0;
 
-// 503 é sobrecarga do modelo, não da chave. Não repetir a mesma solicitação em todas as chaves.
+// Tenta todas as chaves rápido (sem espera entre elas); só faz UMA pausa curta se todas
+// baterem em sobrecarga (503), antes de tentar a rodada inteira de novo.
 export async function callGemini({ systemInstruction, contents, forceFunctionName }) {
   const keys = getApiKeys();
-  if (!keys.length) { const e = new Error("GEMINI_API_KEY não configurada."); e.code = "missing_key"; throw e; }
-  if (Date.now() < overloadUntil) {
-    const e = new Error("Gemini temporariamente indisponível após 503; usando fallback.");
-    e.status = 503; e.code = "UNAVAILABLE"; throw e;
+  if (keys.length === 0) {
+    const err = new Error("GEMINI_API_KEY não configurada.");
+    err.code = "missing_key";
+    throw err;
   }
-  const key = keys[keyIndex++ % keys.length];
-  const started = Date.now();
-  try {
-    const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName });
-    console.info(`[kira-provider] provider=gemini status=ok duration_ms=${Date.now()-started}`);
-    return data;
-  } catch (err) {
-    if (err.status === 503 || err.code === "UNAVAILABLE") {
-      overloadUntil = Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000));
+
+  const startIndex = keyIndex;
+  keyIndex = (keyIndex + 1) % keys.length;
+
+  async function tryAll() {
+    let lastError;
+    let hadOverload = false;
+    for (let i = 0; i < keys.length; i++) {
+      const apiKey = keys[(startIndex + i) % keys.length];
+      try {
+        return await requestGemini({ systemInstruction, contents, apiKey, forceFunctionName });
+      } catch (err) {
+        lastError = err;
+        const isOverload = err.status === 503 || err.code === "UNAVAILABLE";
+        const isQuotaOrAuth = err.status === 429 || err.code === "RESOURCE_EXHAUSTED" || err.status === 401 || err.status === 403;
+        if (isOverload) hadOverload = true;
+        if (!isOverload && !isQuotaOrAuth) throw err;
+      }
     }
-    console.warn(`[kira-provider] provider=gemini status=${err.status || err.name || "error"} duration_ms=${Date.now()-started}`);
+    const err = lastError || new Error("Todas as chaves falharam.");
+    err.hadOverload = hadOverload;
+    throw err;
+  }
+
+  try {
+    return await tryAll();
+  } catch (err) {
+    if (err.hadOverload) {
+      await sleep(1200);
+      return tryAll();
+    }
     throw err;
   }
 }

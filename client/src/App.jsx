@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./styles/KiraMidnight.css";
 import InputBar from "./components/InputBar.jsx";
 import MessageThread from "./components/MessageThread.jsx";
@@ -32,6 +32,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const submittingRef = useRef(false);
   const [loadingLabel, setLoadingLabel] = useState("pensando…");
   const [error, setError] = useState(null);
   const [activeArtifact, setActiveArtifact] = useState(null);
@@ -109,7 +110,8 @@ export default function App() {
     const value = (text ?? input).trim();
     const { image, audio } = attachments;
     if (!value && !image && !audio) return;
-    if (loading) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
 
     const userMessage = {
       role: "user",
@@ -135,6 +137,7 @@ export default function App() {
         {
           role: "assistant",
           content: res.reply,
+          reveal: !res.artifactFiles?.length,
           imageUrl: res.imageUrl,
           documentName: res.documentName,
           documentContent: res.documentContent,
@@ -150,6 +153,7 @@ export default function App() {
       setError(e.message);
       setMessages((m) => [...m, { role: "assistant", content: e.message, isError: true }]);
     } finally {
+      submittingRef.current = false;
       setLoading(false);
     }
   }

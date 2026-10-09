@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FileDown, PanelsTopLeft } from "lucide-react";
 import Markdown from "./Markdown.jsx";
 
@@ -35,6 +35,25 @@ function DocumentCard({ name, content }) {
   );
 }
 
+function RevealedMarkdown({ content }) {
+  const [visible, setVisible] = useState(0);
+  useEffect(() => {
+    setVisible(0);
+    if (!content) return;
+    const started = performance.now();
+    const duration = Math.min(2200, Math.max(300, content.length * 3));
+    let frame;
+    const tick = (now) => {
+      const ratio = Math.min(1, (now - started) / duration);
+      setVisible(Math.min(content.length, Math.ceil(content.length * ratio)));
+      if (ratio < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [content]);
+  return <Markdown>{content.slice(0, visible)}</Markdown>;
+}
+
 export default function MessageThread({ messages, loading, loadingLabel, onOpenArtifact }) {
   const endRef = useRef(null);
 
@@ -67,7 +86,7 @@ export default function MessageThread({ messages, loading, loadingLabel, onOpenA
                 <div className="rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-sm text-coral font-body">{m.content}</div>
               ) : (
                 <>
-                  <Markdown>{m.content}</Markdown>
+                  {m.reveal ? <RevealedMarkdown content={m.content || ""} /> : <Markdown>{m.content}</Markdown>}
                   {m.imageUrl && (
                     <img src={m.imageUrl} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" />
                   )}

@@ -11,10 +11,13 @@ import { callGemini, buildPollinationsUrl, callHomeAssistant, HOME_ASSISTANT_ENA
 import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
 import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
+import { classifyKiraIntent } from "./lib/intentRouter.js";
+import { classifyKiraComplexity } from "./lib/complexityRouter.js";
 import { routeRequest, estimateChars } from "./lib/modelRouter.js";
 import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, applyFileOperations, generateReadme, readZip } from "./lib/projectUtils.js";
 import { validateArtifact, repairWebConnections, artifactSuccessReply, artifactQualityPrompt } from "./lib/artifactQuality.js";
 import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/developerAgent.js";
+import { inspectProjectFiles } from "./lib/qualityGate.js";
 import {
   initStore,
   findUserByUsername,
@@ -62,7 +65,8 @@ Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados;
 Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos. Preserve a stack.
 Não anuncie genericamente "criei uma landing page". O servidor apresentará a lista exata dos arquivos criados.
 Imagens: use generate_image quando pedirem geração. Home Assistant: só use control_device quando pedido.
-Markdown puro; sem HTML decorativo.`;
+Markdown puro; sem HTML decorativo.
+Precisão e honestidade técnica: nunca afirme ter inspecionado código, arquitetura, banco, logs ou configurações que não foram fornecidos. Sem evidência, apresente riscos como hipóteses ("pode ocorrer", "verifique se") e peça o código relevante para confirmar problemas específicos. Diferencie explicitamente fatos verificados, hipóteses e recomendações. Para SQL injection, priorize consultas parametrizadas; validação de entrada é defesa complementar. Não cite nomes internos de ferramentas (como create_document ou update_artifact) nas respostas comuns. Não alegue ter executado testes ou verificado arquivos sem fazê-lo.`;
 
 const CURRENT_TERMS_VERSION = "2026-10-04-v1";
 const CURRENT_DISCLAIMER_VERSION = "2026-10-04-v1";
@@ -379,6 +383,8 @@ app.post("/api/artifacts/:id/manual-save", requireAuth, async (req,res)=>{
 // ---------- Chat (Kira) ----------
 
 app.post("/api/chat", requireAuth, async (req, res) => {
+  const chatStartedAt = Date.now();
+  res.once("finish", () => console.info(`[kira-chat] status=${res.statusCode} duration_ms=${Date.now()-chatStartedAt}`));
   try {
     const { message, conversationId, image, audio, artifactId } = req.body;
     if ((!message || typeof message !== "string") && !image && !audio) {
@@ -406,9 +412,10 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const mentioned = message ? await findProjectMention(req.user.id, message) : null;
     const resolvedArtifactId = artifactId || mentioned?.id || active?.artifactId || null;
     const existingArtifact = resolvedArtifactId ? await getArtifact(req.user.id, resolvedArtifactId) : null;
-    const editingArtifact = Boolean(existingArtifact && message && typeof message === "string");
-    const wantsArtifact = /(?:cria|crie|criar|gera|gere|gerar|faça|fazer|monte|montar|desenvolva|desenvolver|entregue|quero|preciso|arquivo|arquivos|artifact|projeto|site|landing page|html|css|javascript|react|código|codigo)/i.test(textMessage)
-      && /(?:arquivo|arquivos|artifact|projeto|site|landing page|html|css|javascript|react|código|codigo|download|baixar|pasta)/i.test(textMessage);
+    const {kind: intentKind, editingArtifact, wantsArtifact} = classifyKiraIntent(textMessage, Boolean(existingArtifact));
+    console.info(`[kira-intent] kind=${intentKind}`);
+    const complexity = classifyKiraComplexity(textMessage, intentKind);
+    console.info(`[kira-complexity] level=${complexity} path=${complexity==="advanced"?"groq-first":complexity==="project"?"workspace":"fast-chat"}`);
     const currentParts = [{ text: textMessage }];
     if (image?.data) currentParts.push({ inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } });
     if (audio?.data) currentParts.push({ inlineData: { mimeType: audio.mimeType || "audio/webm", data: audio.data } });
@@ -417,7 +424,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const route = routeRequest({message:textMessage,image,audio,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
 
     // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
-    if(route.task==="chat_small" && !image && !audio){
+    if(route.task==="chat_small" && complexity==="simple" && !image && !audio){
       const fp=cacheFingerprint(textMessage);
       let cached=await getCachedResponse(fp);
       if(!cached){
@@ -435,12 +442,15 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
     let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
     let usedFallback = false;
+    let selectedProvider = null;
+    let selectedModel = null;
 
     try {
-      if(route.task==="chat_small" && !editingArtifact && !wantsArtifact && !image && !audio){
+      if(complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && (route.task==="chat_small" || route.task==="chat")){
         try{
           const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,maxTokens:700});
           reply=extra.text; route.selectedProvider=extra.provider; route.selectedModel=extra.model;
+          selectedProvider=extra.provider; selectedModel=extra.model;
         }catch(extraErr){
           if(extraErr.code!=="no_extra_provider") console.warn("[router] provedores extras indisponíveis:",extraErr.message);
         }
@@ -448,17 +458,37 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       if(!reply && route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
         reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,model:route.providers[0].model,maxTokens:900});
         route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
+        selectedProvider="openai"; selectedModel=route.providers[0].model;
       }
       const aiContents = editingArtifact
         ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }] }]
         : (wantsArtifact
           ? [...history, { role: "user", parts: [{ text: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage) }] }]
           : contents);
+      // KIRA_ADVANCED_GROQ_FIRST_V1: apenas conversa técnica, nunca workspace.
+      if (!reply && complexity==="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && GROQ_ENABLED) {
+        try {
+          const preferredModel=process.env.KIRA_ADVANCED_GROQ_MODEL || "openai/gpt-oss-20b";
+          reply=await callGroqFallback({
+            systemInstruction:SYSTEM_PROMPT, message:textMessage, preferredModel,
+            onSelectedModel:(model)=>{selectedModel=model;}
+          });
+          if(reply) {
+            selectedProvider="groq";
+            route.selectedProvider="groq";
+            route.selectedModel=selectedModel || preferredModel;
+            console.info("[kira-router] advanced=groq-first selected="+route.selectedModel);
+          }
+        } catch(e) {
+          console.warn("[kira-router] advanced Groq falhou; seguindo Gemini:",e.status || e.message);
+        }
+      }
       const data = reply ? null : await callGemini({
         systemInstruction: SYSTEM_PROMPT,
         contents: aiContents,
         forceFunctionName: editingArtifact ? "update_artifact" : (wantsArtifact ? "create_document" : undefined)
       });
+      if(data){selectedProvider="gemini"; selectedModel=GEMINI_MODEL;}
       const candidate = data?.candidates?.[0];
       const parts = candidate?.content?.parts || [];
       const functionCall = parts.find((p) => p.functionCall)?.functionCall;
@@ -537,7 +567,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage) });
+            // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
+            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-20b" });
             artifactName = artifact.projectName;
             artifactFiles = repairWebConnections(artifact.files);
             const quality=validateArtifact(artifactFiles,textMessage);
@@ -547,11 +578,12 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             artifactFiles=quality.files;
             reply = artifactSuccessReply(artifactFiles);
           } else {
-            reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage });
+            reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage, onSelectedModel: (model) => { selectedModel=model; } });
           }
           usedFallback = true;
+          selectedProvider="groq";
         } catch (groqErr) {
-          console.error("[chat] Groq fallback também falhou:", groqErr.message);
+          console.error(`[kira-artifact] fallback_failed status=${groqErr.status || "none"} code=${groqErr.code || "none"} reason=${groqErr.message}`);
           const errorMessage = wantsArtifact
             ? "Não consegui gerar os arquivos agora porque os serviços de IA estão temporariamente indisponíveis. Tente novamente em alguns instantes."
             : friendlyGeminiError(err);
@@ -565,6 +597,18 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
     }
 
+    if (reply && selectedProvider) console.info(`[kira-provider] selected=${selectedProvider} model=${selectedModel || "unknown"} intent=${intentKind} complexity=${complexity}`);
+    // Quality Gate fase 2: diagnóstico passivo, sem mudar a geração ou a persistência.
+    if (artifactFiles?.length) {
+      try {
+        const report=inspectProjectFiles(artifactFiles);
+        console.info('[kira-quality] checked='+report.filesChecked+' issues='+report.issues.length+' warnings='+report.warnings.length);
+        for(const item of report.issues.slice(0,12))console.warn('[kira-quality] issue='+item);
+        for(const item of report.warnings.slice(0,12))console.warn('[kira-quality] warning='+item);
+      } catch (qualityError) {
+        console.warn('[kira-quality] validator_error='+qualityError.message);
+      }
+    }
     if (artifactFiles?.length && !responseArtifactId) {
       const createdArtifact = await createArtifactVersioned(req.user.id, conv.id, artifactName || "Artifact", artifactFiles, "Criação inicial");
       responseArtifactId = createdArtifact.id;
@@ -582,7 +626,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion }
     ]);
 
-    if(route.task==="chat_small" && reply && !artifactFiles?.length && !image && !audio){
+    if(route.task==="chat_small" && complexity==="simple" && reply && !artifactFiles?.length && !image && !audio){
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
     res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false });
