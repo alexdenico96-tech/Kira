@@ -2,6 +2,7 @@
 // Converts literal backslash-n tokens only in JavaScript lexical code positions.
 // A repair is accepted only when the existing Syntax Gate reports fewer issues.
 const JS_FILE = /\.(?:js|mjs|cjs|jsx)$/i;
+const TEXT_FILE = /\.(?:html|htm|css|scss)$/i;
 
 function decodeOutsideStrings(source) {
   let state = 'code';
@@ -34,7 +35,18 @@ function decodeOutsideStrings(source) {
 export function repairArtifactNewlines(files, inspectProjectSyntax) {
   let fixed = 0, tokens = 0;
   const result = files.map(file => {
-    if (!JS_FILE.test(file.path || '') || typeof file.content !== 'string') return file;
+    if (typeof file.content !== 'string') return file;
+    if (TEXT_FILE.test(file.path || '')) {
+      // Apenas arquivos claramente achatados; evita tocar em escapes legítimos.
+      const encoded = (file.content.match(/\\n/g) || []).length;
+      if (encoded >= 3 && file.content.split('\n').length <= 2) {
+        const decoded = file.content.replace(/\\n/g, '\n');
+        fixed++; tokens += encoded;
+        return { ...file, content: decoded };
+      }
+      return file;
+    }
+    if (!JS_FILE.test(file.path || '')) return file;
     if (!file.content.includes('\\n')) return file;
     // This targets single-line / flattened code, not normally formatted files.
     const actualLines = file.content.split('\n').length;

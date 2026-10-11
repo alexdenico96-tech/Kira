@@ -35,6 +35,17 @@ function DocumentCard({ name, content }) {
   );
 }
 
+function GeneratedImage({ src }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  if (failed) return (
+    <div className="mt-2 text-sm text-coral font-body" role="alert">
+      A imagem não pôde ser carregada pelo serviço de geração. Tente novamente mais tarde.
+    </div>
+  );
+  return <img src={src} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" onError={() => setFailed(true)} />;
+}
+
 function RevealedMarkdown({ content }) {
   const [visible, setVisible] = useState(0);
   useEffect(() => {
@@ -88,7 +99,7 @@ export default function MessageThread({ messages, loading, loadingLabel, onOpenA
                 <>
                   {m.reveal ? <RevealedMarkdown content={m.content || ""} /> : <Markdown>{m.content}</Markdown>}
                   {m.imageUrl && (
-                    <img src={m.imageUrl} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" />
+                    <GeneratedImage src={m.imageUrl} />
                   )}
                   {m.artifactFiles?.length ? (
                     <button

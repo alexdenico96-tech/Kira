@@ -8,7 +8,8 @@ import { fileURLToPath } from "url";
 import { signToken, requireAuth } from "./lib/auth.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
-import { callGemini, buildPollinationsUrl, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
+import { callGemini, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
+import { generateKiraImage } from "./lib/imageGeneration.js";
 import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
 import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
@@ -63,13 +64,25 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
+// Imagens geradas e salvas localmente.
+app.use(
+  "/api/generated-images",
+  express.static(path.join(__dirname, "generated-images"), {
+    fallthrough: false,
+    maxAge: "7d",
+    immutable: true
+  })
+);
+
+
 const SYSTEM_PROMPT = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
 Conversa: responda de forma útil e concisa.
 Código novo: use create_document. Para projetos complexos, aja como engenheira de software: planeje arquitetura, preserve a stack solicitada, gere configuração/dependências/entrypoints/componentes necessários e revise imports/exports/caminhos antes de entregar. Entregue TODOS os arquivos completos e conectados. Nunca reduza frameworks a HTML simples.
 Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar.
 Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos. Preserve a stack.
 Não anuncie genericamente "criei uma landing page". O servidor apresentará a lista exata dos arquivos criados.
-Imagens: use generate_image quando pedirem geração. Home Assistant: só use control_device quando pedido.
+Imagens: use generate_image quando pedirem geração. Para fotografias realistas, descreva sujeito, contexto, iluminação fisicamente plausível, materiais, profundidade e composição com fidelidade ao pedido; evite adicionar objetos não solicitados. Para outros estilos, respeite a estética pedida. Home Assistant: só use control_device quando pedido.
+Anexos: quando receber imagem ou áudio, baseie a resposta no conteúdo efetivamente recebido; não invente detalhes, transcrições ou características não verificáveis. Quando a pergunta exigir, responda de modo completo, estruturado e coerente, sem repetição desnecessária.
 Markdown puro; sem HTML decorativo.
 Precisão e honestidade técnica: nunca afirme ter inspecionado código, arquitetura, banco, logs ou configurações que não foram fornecidos. Sem evidência, apresente riscos como hipóteses ("pode ocorrer", "verifique se") e peça o código relevante para confirmar problemas específicos. Diferencie explicitamente fatos verificados, hipóteses e recomendações. Para SQL injection, priorize consultas parametrizadas; validação de entrada é defesa complementar. Não cite nomes internos de ferramentas (como create_document ou update_artifact) nas respostas comuns. Não alegue ter executado testes ou verificado arquivos sem fazê-lo.`;
 
@@ -385,6 +398,14 @@ app.post("/api/artifacts/:id/manual-save", requireAuth, async (req,res)=>{
   }catch(err){console.error(err);res.status(500).json({error:"Não consegui salvar a edição manual."});}
 });
 
+
+// KIRA_MULTIMODAL_V2: pedidos explícitos de imagem, não de interface/código.
+function kiraWantsGeneratedImage(value) {
+  const text=String(value||'').trim();
+  if (!text || /\b(html|css|javascript|jsx|tsx|site|website|landing page|c[oó]digo|componente|aplicativo|app|p[aá]gina web)\b/i.test(text)) return false;
+  return /(?:\b(?:crie|cria|criar|gere|gera|gerar|desenhe|desenha|desenhar|produza|fa[cç]a|quero)\b.{0,90}\b(?:imagem|foto|fotografia|ilustra[cç][aã]o|retrato|arte visual)\b|\b(?:imagem|foto|fotografia|ilustra[cç][aã]o|retrato)\b.{0,50}\b(?:de|do|da|com|mostrando)\b|\b(?:generate|create|draw|make)\b.{0,90}\b(?:image|picture|photo|portrait|illustration)\b)/i.test(text);
+}
+
 // ---------- Chat (Kira) ----------
 
 app.post("/api/chat", requireAuth, async (req, res) => {
@@ -429,7 +450,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const route = routeRequest({message:textMessage,image,audio,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
 
     // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
-    if(route.task==="chat_small" && complexity==="simple" && !image && !audio){
+    if(route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage)){
       const fp=cacheFingerprint(textMessage);
       let cached=await getCachedResponse(fp);
       if(!cached){
@@ -451,7 +472,17 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     let selectedModel = null;
 
     try {
-      if(complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && (route.task==="chat_small" || route.task==="chat")){
+      // KIRA_MULTIMODAL_V2: gerar imagem sem depender de function calling do modelo textual.
+      // Preserva todas as rotas anteriores para os demais pedidos.
+      if (!image?.data && !audio?.data && !editingArtifact && kiraWantsGeneratedImage(textMessage)) {
+        const visualPrompt = /\b(realista|hiperrealista|fotorealista|fotogr[aá]fic[ao]|photorealistic|realistic)\b/i.test(textMessage)
+          ? textMessage + '. Photorealistic image, natural physically plausible lighting, realistic materials and proportions, coherent anatomy and perspective, faithful subject and composition, no unrelated elements.'
+          : textMessage;
+        imageUrl = await generateKiraImage(visualPrompt);
+        reply = 'Aqui está a imagem solicitada.';
+        console.info('[kira-image] direct_generation=1');
+      }
+      if(!reply && complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && (route.task==="chat_small" || route.task==="chat")){
         try{
           const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,maxTokens:700});
           reply=extra.text; route.selectedProvider=extra.provider; route.selectedModel=extra.model;
@@ -460,7 +491,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
           if(extraErr.code!=="no_extra_provider") console.warn("[router] provedores extras indisponíveis:",extraErr.message);
         }
       }
-      if(!reply && route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
+      if(!reply && !image && !audio && route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
         reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,model:route.providers[0].model,maxTokens:900});
         route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
         selectedProvider="openai"; selectedModel=route.providers[0].model;
@@ -500,7 +531,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
       if (functionCall?.name === "generate_image") {
         const prompt = functionCall.args?.prompt || textMessage;
-        imageUrl = buildPollinationsUrl(prompt);
+        imageUrl = await generateKiraImage(prompt);
         reply = `Aqui está a imagem que você pediu:\n\n*"${prompt}"*`;
             } else if (functionCall?.name === "update_artifact" && editingArtifact) {
         const args=functionCall.args||{};
@@ -563,6 +594,20 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
     } catch (err) {
       console.error(`[chat] Gemini falhou (status ${err.status}, code ${err.code}):`, err.message);
+      // Não anunciar uma imagem que não foi gerada.
+      if (!image?.data && !audio?.data && kiraWantsGeneratedImage(textMessage)) {
+        console.warn("[kira-image] generation_failed:", err.message);
+        return res.status(502).json({
+          error: "Não consegui gerar a imagem agora. Tente novamente."
+        });
+      }
+      // KIRA_MULTIMODAL_SAFE_V1: nunca substituir áudio/imagem por um fallback apenas textual.
+      if (image?.data || audio?.data) {
+        console.warn(`[kira-multimodal] unavailable kind=${audio?.data ? 'audio' : 'image'} status=${err.status || 'error'}`);
+        return res.status(502).json({ error: audio?.data
+          ? 'Não consegui processar o áudio neste momento. O serviço de compreensão de áudio está indisponível; tente novamente.'
+          : 'Não consegui analisar a imagem neste momento. O serviço de visão está indisponível; tente novamente.' });
+      }
       if (GROQ_ENABLED) {
         try {
           if (editingArtifact) {
@@ -573,12 +618,13 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
             // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-20b", onSelectedModel: (model) => { selectedModel=model; } });
+            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
             artifactName = artifact.projectName;
             artifactFiles = repairPackageJsonNewlines(repairWebConnections(artifact.files));
             const quality=validateArtifact(artifactFiles,textMessage);
             const devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(artifactFiles,textMessage) : {ok:true,issues:[]};
             let issues=[...quality.issues,...devQuality.issues];
+            let packageRepaired=false; // KIRA_V4_PACKAGE_PRESERVE_FIX
              // KIRA_TARGETED_PACKAGE_REPAIR_V1
              // Conserta apenas package.json, sem enviar os outros arquivos nem regenerar o projeto.
              if(issues.length===1 && issues[0]==="package.json contém JSON inválido"){
@@ -596,6 +642,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
                    if(checked.ok && basic.ok){
                      artifactFiles=candidate;
                      issues=[];
+                     packageRepaired=true;
                      console.info('[kira-package-targeted] status=repaired');
                    }else{
                      console.warn('[kira-package-targeted] status=rejected reason=validation_failed');
@@ -608,20 +655,46 @@ app.post("/api/chat", requireAuth, async (req, res) => {
              if(issues.length===1 && issues[0]==="package.json contém JSON inválido"){
                throw new Error('package.json inválido; reparo pontual não aprovado. Projeto não salvo.');
              }
-            // KIRA_ARTIFACT_REPAIR_V1: uma tentativa de regeneração guiada, sem alterar arquivos localmente.
-            if(issues.length){
-              console.warn(`[kira-artifact] validation_failed count=${issues.length}; retry=1`);
-              const retryMessage = `${isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage)}\\n\\nA tentativa anterior foi rejeitada: ${issues.join('; ')}. Regenere o projeto COMPLETO em JSON válido. IMPORTANTE: package.json deve ser uma string de conteúdo contendo JSON.parse válido, sem comentários, sem markdown, com aspas duplas, sem vírgulas finais e com scripts/dependências coerentes.`;
-              const repaired = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: retryMessage, preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-20b", onSelectedModel: (model) => { selectedModel=model; } });
-              const retryFiles = repairPackageJsonNewlines(repairWebConnections(repaired.files));
-              const retryQuality = validateArtifact(retryFiles,textMessage);
-              const retryDev = isComplexProjectRequest(textMessage) ? analyzeProject(retryFiles,textMessage) : {ok:true,issues:[]};
+            // KIRA_ARTIFACT_TARGETED_REPAIR_V4: solicitar apenas arquivos ausentes.
+            if (issues.length) {
+              const missing = new Set();
+              for (const issue of issues) {
+                if (issue === "falta package.json para a stack solicitada") missing.add("package.json");
+                else if (issue === "falta index.html") missing.add("index.html");
+                else if (issue === "falta src/main.jsx/tsx") missing.add("src/main.jsx");
+                else if (issue === "falta src/App.jsx/tsx") missing.add("src/App.jsx");
+                else if (/^falta (style\.css|script\.js)$/.test(issue)) missing.add(issue.slice(6));
+              }
+              const missingOnly = missing.size > 0 && issues.every(issue =>
+                issue === "falta package.json para a stack solicitada" ||
+                issue === "falta index.html" ||
+                issue === "falta src/main.jsx/tsx" ||
+                issue === "falta src/App.jsx/tsx" ||
+                /^falta (style\.css|script\.js)$/.test(issue)
+              );
+              if (!missingOnly) throw new Error(`Artifact incompleto; reparo limitado para economizar tokens: ${issues.slice(0,5).join('; ')}`);
+              const existingPaths = artifactFiles.map(f => f.path);
+              const repairMessage = `Pedido original: ${textMessage.slice(0,2000)}\n` +
+                `Arquivos que JÁ existem (não gere novamente): ${existingPaths.join(', ')}\n` +
+                `Gere SOMENTE estes arquivos ausentes, com conteúdo completo: ${[...missing].join(', ')}. ` +
+                `Retorne objeto JSON com projectName e files (path, content). Não inclua arquivos existentes. Preserve a stack solicitada.`;
+              console.info(`[kira-artifact] targeted_missing=${missing.size} retry=1`);
+              const repaired = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: repairMessage,
+                preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b",
+                onSelectedModel: model => { selectedModel=model; } });
+              const existingSet = new Set(existingPaths.map(p => p.replaceAll('\\','/')));
+              const requestedSet = new Set(missing);
+              const additions = repaired.files.filter(f => requestedSet.has(f.path.replaceAll('\\','/')) && !existingSet.has(f.path.replaceAll('\\','/')));
+              if (!additions.length) throw new Error('Reparo não retornou arquivos ausentes; projeto não salvo.');
+              const combined = repairPackageJsonNewlines(repairWebConnections([...artifactFiles, ...additions]));
+              const retryQuality = validateArtifact(combined,textMessage);
+              const retryDev = isComplexProjectRequest(textMessage) ? analyzeProject(combined,textMessage) : {ok:true,issues:[]};
               const retryIssues = [...retryQuality.issues,...retryDev.issues];
-              if(retryIssues.length) throw new Error(`Groq Artifact reprovado após reparo: ${retryIssues.join('; ')}`);
-              artifactName=repaired.projectName;
+              if (retryIssues.length) throw new Error(`Reparo parcial reprovado: ${retryIssues.slice(0,5).join('; ')}`);
               artifactFiles=retryQuality.files;
-              console.info(`[kira-artifact] retry=1 status=ok files=${artifactFiles.length}`);
-            } else {
+              console.info(`[kira-artifact] targeted_repair=ok files=${artifactFiles.length}`);
+            } else if (!packageRepaired) {
+              // Nunca sobrescrever o package.json reparado com o snapshot anterior.
               artifactFiles=quality.files;
             }
             reply = artifactSuccessReply(artifactFiles);
@@ -655,15 +728,17 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         reply = artifactSuccessReply(artifactFiles);
       }
     }
-    // Quality Gate fase 2: diagnóstico passivo, sem mudar a geração ou a persistência.
+    // Quality Gate: valida o resultado FINAL, após os reparos e antes da persistência.
     if (artifactFiles?.length) {
       try {
         const report=inspectProjectFiles(artifactFiles);
         console.info('[kira-quality] checked='+report.filesChecked+' issues='+report.issues.length+' warnings='+report.warnings.length);
         for(const item of report.issues.slice(0,12))console.warn('[kira-quality] issue='+item);
         for(const item of report.warnings.slice(0,12))console.warn('[kira-quality] warning='+item);
+        if (!report.ok) return res.status(422).json({ error: 'Projeto não salvo: validação final encontrou problemas: ' + report.issues.slice(0,3).join('; ') });
       } catch (qualityError) {
         console.warn('[kira-quality] validator_error='+qualityError.message);
+        return res.status(422).json({ error: 'Projeto não salvo: não foi possível concluir a validação final.' });
       }
     }
     if (artifactFiles?.length) {
@@ -672,7 +747,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         console.info(`[kira-syntax] checked=${syntax.checked} skipped=${syntax.skipped} issues=${syntax.issues.length} warnings=${syntax.warnings.length}`);
         for (const issue of syntax.issues.slice(0, 12)) console.warn(`[kira-syntax] issue=${issue}`);
         for (const warning of syntax.warnings.slice(0, 12)) console.warn(`[kira-syntax] warning=${warning}`);
-      } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); }
+        if (syntax.issues.length) return res.status(422).json({ error: "Projeto não salvo: problemas de sintaxe: " + syntax.issues.slice(0,3).join("; ") });
+      } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); return res.status(422).json({ error: "Projeto não salvo: não foi possível verificar a sintaxe." }); }
     }
     if (artifactFiles?.length && !responseArtifactId) {
       const createdArtifact = await createArtifactVersioned(req.user.id, conv.id, artifactName || "Artifact", artifactFiles, "Criação inicial");
@@ -691,7 +767,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion }
     ]);
 
-    if(route.task==="chat_small" && complexity==="simple" && reply && !artifactFiles?.length && !image && !audio){
+    if(route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio){
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
     res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false });

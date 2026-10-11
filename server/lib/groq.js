@@ -25,22 +25,31 @@ async function requestGroq({ apiKey, model, messages, maxTokens = 4096, jsonMode
     body: JSON.stringify({
       model,
       messages,
-      temperature: 0.5,
+      temperature: jsonMode ? 0.1 : 0.5,
       max_tokens: maxTokens,
       ...(jsonMode ? { response_format: { type: "json_object" } } : {})
     }),
-    signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GROQ_TIMEOUT_MS || 18000)))
+    signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GROQ_TIMEOUT_MS || (jsonMode && maxTokens >= 8192 ? 30000 : 18000))))
   });
 
   if (!res.ok) {
     const body = await res.text();
-    const err = new Error(`Groq (${model}) falhou: ${body}`);
+    let code = "unknown";
+    try { code = JSON.parse(body)?.error?.code || code; } catch {}
+    // Avoid logging failed_generation, which can contain the entire generated project.
+    const err = new Error(`Groq (${model}) HTTP ${res.status} code=${code}`);
+    err.code = code;
     err.status = res.status;
     throw err;
   }
 
   const data = await res.json();
-  return data.choices?.[0]?.message?.content?.trim() || "";
+  const choice = data.choices?.[0];
+  const content = choice?.message?.content?.trim() || "";
+  if (jsonMode && maxTokens >= 8192) {
+    console.info(`[kira-groq-artifact] finish=${choice?.finish_reason || "unknown"} chars=${content.length} tokens=${data.usage?.completion_tokens ?? "unknown"}`);
+  }
+  return content;
 }
 
 async function tryModels(request, onSelectedModel, preferredModel, onlyPreferred = false) {
@@ -108,13 +117,22 @@ Para qualquer site HTML/CSS/JavaScript puro (NÃO APIs Node/Express ou backends)
     throw err;
   }
 
-  const files = Array.isArray(parsed?.files)
-    ? parsed.files
+  // Aceita envelopes JSON comuns sem inventar arquivos.
+  const fileList = Array.isArray(parsed?.files) ? parsed.files
+    : Array.isArray(parsed?.artifact?.files) ? parsed.artifact.files
+    : Array.isArray(parsed?.project?.files) ? parsed.project.files
+    : Array.isArray(parsed?.document?.files) ? parsed.document.files
+    : null;
+  const files = Array.isArray(fileList)
+    ? fileList
         .filter((file) => file && typeof file.path === "string" && file.path.trim() && typeof file.content === "string" && file.content.length > 0)
         .map((file) => ({ path: file.path.trim(), content: file.content, language: typeof file.language === "string" ? file.language : "" }))
     : [];
 
   if (files.length === 0) {
+    const shape = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? Object.keys(parsed).slice(0, 8).join(",") : typeof parsed;
+    console.warn(`[kira-groq-artifact] empty_files json_keys=${shape} raw_chars=${raw.length}`);
     const err = new Error("Groq não devolveu arquivos válidos para o Artifact.");
     err.code = "empty_artifact";
     throw err;

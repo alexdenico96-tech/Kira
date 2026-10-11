@@ -15,7 +15,10 @@ export function inspectProjectSyntax(files = []) {
     const name = String(f?.path || '').replaceAll('\\', '/');
     if (!/\.(?:js|mjs|cjs)$/i.test(name)) continue;
     if (checked >= 25 || typeof f.content !== 'string' || Buffer.byteLength(f.content, 'utf8') > 128 * 1024) { skipped++; continue; }
-    const mode = name.endsWith('.mjs') ? 'module' : name.endsWith('.cjs') ? 'commonjs' : type;
+    // Vite carrega vite.config.js por um loader que suporta ESM mesmo sem package.json type=module.
+    // A checagem via stdin deve refletir essa semântica, sem executar código.
+    const viteConfig = /(?:^|\/)vite\.config\.js$/i.test(name);
+    const mode = name.endsWith('.mjs') ? 'module' : name.endsWith('.cjs') ? 'commonjs' : viteConfig ? 'module' : type;
     // Node's --check parses stdin but never evaluates the source.
     const run = spawnSync(process.execPath, ['--input-type=' + mode, '--check'], {
       input: f.content, encoding: 'utf8', timeout: 1800, maxBuffer: 32 * 1024,

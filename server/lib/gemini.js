@@ -17,7 +17,7 @@ export const HOME_ASSISTANT_ENABLED = Boolean(HOME_ASSISTANT_URL && HOME_ASSISTA
 
 const IMAGE_TOOL = {
   name: "generate_image",
-  description: "Gera uma imagem a partir de uma descrição em texto. Use quando o usuário pedir para criar/desenhar/ilustrar algo.",
+  description: "Gera uma imagem a partir de uma descrição em texto. Use quando o usuário pedir para criar/desenhar/ilustrar algo. Produza um prompt fiel ao pedido, com composição e objetos coerentes. Para fotografia, descreva realismo fotográfico, iluminação natural, anatomia correta, materiais, perspectiva e detalhes plausíveis; para outros estilos respeite o estilo solicitado.",
   parameters: {
     type: "OBJECT",
     properties: { prompt: { type: "STRING", description: "Descrição detalhada da imagem, de preferência em inglês." } },
@@ -102,9 +102,10 @@ function sleep(ms) {
 }
 
 async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName, model }) {
+  const hasAudio = contents.some(c => c.parts?.some(p => p.inlineData?.mimeType?.startsWith("audio/")));
   const res = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
-    signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : 18000)))),
+    signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : hasAudio ? 30000 : 18000)))),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -225,6 +226,22 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
         console.warn(`[kira-gemini] discovery_failed status=${discoveryError.status || "error"}`);
       }
     }
+    // KIRA_MULTIMODAL_V2: apenas erro transitório 500; uma tentativa em modelo alternativo.
+    // Evita trocar para provedores que não recebem os anexos.
+    const hasAudio = contents.some(c => c.parts?.some(p => p.inlineData?.mimeType?.startsWith("audio/")));
+    const transientAudioTimeout = hasAudio && (err.name === "TimeoutError" || err.code === 23);
+    if ((err.status === 500 || transientAudioTimeout) && !forceFunctionName) {
+      try {
+        const models = await discoverGeminiModels(key);
+        const alternative = chooseAlternatives(models, primary).find(m => m !== primary);
+        if (alternative) {
+          console.info('[kira-gemini] retry_transient model=' + alternative);
+          return await attempt(alternative);
+        }
+      } catch (retryError) {
+        console.warn('[kira-gemini] retry_transient_failed status=' + (retryError.status || retryError.name || 'error'));
+      }
+    }
     if (err.status === 503 || err.code === "UNAVAILABLE") {
       overloadUntil = Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000));
     }
@@ -234,7 +251,7 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
 }
 
 export function buildPollinationsUrl(prompt) {
-  const encoded = encodeURIComponent(prompt).slice(0, 800);
+  const encoded = encodeURIComponent(String(prompt || "").slice(0, 350));
   return `https://image.pollinations.ai/prompt/${encoded}?width=1280&height=1280&model=flux&enhance=true&nologo=true`;
 }
 

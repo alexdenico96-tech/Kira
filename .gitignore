@@ -6,3 +6,4 @@ dist/
 # Resíduo do armazenamento antigo em arquivo (pré-Postgres) — não deve mais existir,
 # mas fica como proteção extra caso reapareça.
 server/data/
+/server/generated-images/

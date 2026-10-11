@@ -13,7 +13,19 @@ function safeProjectName(name){return String(name||"projeto").trim().replace(/[^
 function makeZip(files){const enc=new TextEncoder(),local=[],central=[];let offset=0;for(const file of files){const name=enc.encode(String(file.path||"arquivo.txt").replace(/^\/+/,"")),data=enc.encode(String(file.content??"")),crc=crc32(data);const l=concatBytes([u32(0x04034b50),u16(20),u16(0x0800),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),name,data]);local.push(l);central.push(concatBytes([u32(0x02014b50),u16(20),u16(20),u16(0x0800),u16(0),u16(0),u16(0),u32(crc),u32(data.length),u32(data.length),u16(name.length),u16(0),u16(0),u16(0),u16(0),u32(0),u32(offset),name]));offset+=l.length;}const c=concatBytes(central),end=concatBytes([u32(0x06054b50),u16(0),u16(0),u16(files.length),u16(files.length),u32(c.length),u32(offset),u16(0)]);return new Blob([...local,c,end],{type:"application/zip"});}
 function downloadProject(a){if(a?.files?.length)downloadBlob(`${safeProjectName(a.name)}.zip`,makeZip(a.files));}
 function languageFor(file){const ext=(file?.path?.split(".").pop()||"").toLowerCase();return ({js:"javascript",jsx:"javascript",ts:"typescript",tsx:"typescript",html:"html",htm:"html",css:"css",json:"json",md:"markdown",py:"python",java:"java",c:"c",cpp:"cpp",cs:"csharp",php:"php",xml:"xml",yml:"yaml",yaml:"yaml",sql:"sql",sh:"shell"})[ext]||file?.language||"plaintext";}
+function isBundledProject(files){
+  const paths=files.map(f=>String(f.path||"").replaceAll("\\","/").toLowerCase());
+  const packages=files.filter(f=>/(^|\/)package\.json$/i.test(String(f.path||"")));
+  return paths.some(p=>/(^|\/)(vite|next|webpack|astro|angular|svelte)\.config\.[cm]?[jt]s$/.test(p)) ||
+    packages.some(f=>{try{const p=JSON.parse(f.content);return Boolean(p.dependencies?.react||p.dependencies?.vue||p.dependencies?.['next']||p.devDependencies?.vite||p.dependencies?.vite||p.scripts?.build?.includes('vite'));}catch{return false;}}) ||
+    paths.some(p=>/(^|\/)src\/main\.(jsx|tsx)$/.test(p));
+}
+function bundledPreviewNotice(){
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font:15px system-ui,sans-serif;background:#0b1424;color:#f1f5f9;padding:28px;line-height:1.6}main{max-width:550px;margin:32px auto}code,pre{background:#1c2b42;border-radius:6px;padding:4px 7px}pre{padding:16px;overflow:auto}</style></head><body><main><h2>Pré-visualização React/Vite</h2><p>Este projeto precisa ser compilado e executado pelo servidor de desenvolvimento. A pré-visualização HTML simples da Kira não executa JSX, imports nem dependências npm.</p><p>Baixe o ZIP do projeto, extraia os arquivos e execute na pasta que contém o <code>package.json</code>:</p><pre>npm install
+npm run dev</pre><p>Abra o endereço exibido pelo Vite. Esta mensagem não indica erro no projeto.</p></main></body></html>`;
+}
 function previewDocument(files){
+  if(isBundledProject(files))return bundledPreviewNotice();
   const html=files.find(f=>/(^|\/)index\.html?$/i.test(f.path))||files.find(f=>/\.html?$/i.test(f.path));
   if(!html)return `<!doctype html><html><body style="font-family:system-ui;background:#071225;color:#f1f5f9;padding:32px"><h2>Preview indisponível</h2><p>Este projeto não possui um arquivo HTML.</p></body></html>`;
 
