@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import Editor from "@monaco-editor/react";
 import { Download, Eye, FileCode2, FolderArchive, History, RotateCcw, Save, X, Code2 } from "lucide-react";
 import { getArtifact, listArtifactVersions, restoreArtifactVersion, generateProjectReadme, getVersionChanges, saveArtifactFile } from "../lib/api.js";
+
+const ProjectRunner = lazy(() => import("./ProjectRunner.jsx"));
 
 function downloadBlob(name,blob){const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}
 function downloadFile(file){downloadBlob(file.path.split("/").pop()||"arquivo.txt",new Blob([file.content],{type:"text/plain;charset=utf-8"}));}
@@ -84,7 +86,16 @@ export default function ArtifactWorkspace({artifact,token,onArtifactChange,onClo
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-h-11 flex-wrap items-center justify-between gap-1 border-b border-line px-2 sm:px-3"><div className="flex items-center gap-1"><button onClick={()=>setTab("code")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="code"?"bg-neon/15 text-neon":"text-mist"}`}><Code2 size={14}/>Código</button><button onClick={()=>setTab("preview")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="preview"?"bg-neon/15 text-neon":"text-mist"}`}><Eye size={14}/>Preview</button></div><div className="flex items-center gap-1">{tab==="code"&&artifact.id&&<button disabled={!dirty||busy} onClick={saveManual} className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-mist enabled:hover:bg-panel2 enabled:hover:text-paper disabled:opacity-40"><Save size={14}/>Salvar v{(versions[0]?.version||artifact.version||1)+1}</button>}<button onClick={()=>downloadFile(selected)} className="rounded-md p-1.5 text-mist hover:bg-panel2 hover:text-paper" title="Baixar arquivo"><Download size={14}/></button></div></div>
         <div className="min-h-0 flex-1 bg-[#06101f]">
-          {tab==="code"?<Editor height="100%" path={selected.path} language={languageFor(selected)} value={draft} onChange={v=>setDraft(v??"")} theme="vs-dark" options={{fontSize:13,fontFamily:"'Cascadia Code','Fira Code',Consolas,monospace",fontLigatures:true,minimap:{enabled:false},wordWrap:"off",automaticLayout:true,scrollBeyondLastLine:false,padding:{top:14,bottom:14},renderLineHighlight:"all",smoothScrolling:true}}/>:<iframe title={`Preview ${artifact.name}`} sandbox="allow-scripts allow-forms allow-modals" srcDoc={previewDocument(files.map(f=>f.path===selected.path?{...f,content:draft}:f))} className="h-full w-full border-0 bg-white"/>}
+          {tab==="code"?<Editor height="100%" path={selected.path} language={languageFor(selected)} value={draft} onChange={v=>setDraft(v??"")} theme="vs-dark" options={{fontSize:13,fontFamily:"'Cascadia Code','Fira Code',Consolas,monospace",fontLigatures:true,minimap:{enabled:false},wordWrap:"off",automaticLayout:true,scrollBeyondLastLine:false,padding:{top:14,bottom:14},renderLineHighlight:"all",smoothScrolling:true}}/>:(isBundledProject(files)
+            ? <Suspense fallback={<div className="p-5 text-sm text-mist">Preparando ambiente React...</div>}>
+                <ProjectRunner files={files.map(f=>f.path===selected.path?{...f,content:draft}:f)}/>
+              </Suspense>
+            : <iframe
+                title={`Preview ${artifact.name}`}
+                sandbox="allow-scripts allow-forms allow-modals"
+                srcDoc={previewDocument(files.map(f=>f.path===selected.path?{...f,content:draft}:f))}
+                className="h-full w-full border-0 bg-white"
+              />)}}
         </div>
       </div>
     </div>
