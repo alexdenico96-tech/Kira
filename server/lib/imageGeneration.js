@@ -68,6 +68,63 @@ function detectImageExtension(bytes) {
   throw new Error("Formato de imagem Cloudflare não reconhecido.");
 }
 
+// KIRA_CLOUDFLARE_ACCOUNT_MANAGER_V1
+const cloudflareCooldowns = new Map();
+let cloudflareNextAccount = 0;
+
+const CLOUDFLARE_COOLDOWN_MS = 15 * 60 * 1000;
+
+// KIRA_CLOUDFLARE_RETRY_AFTER_V1
+function getCloudflareCooldownMs(response) {
+  const retryAfter = response.headers.get("retry-after");
+
+  if (!retryAfter) return CLOUDFLARE_COOLDOWN_MS;
+
+  const seconds = Number(retryAfter);
+
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(
+      Math.max(1000, seconds * 1000),
+      24 * 60 * 60 * 1000
+    );
+  }
+
+  const retryDate = Date.parse(retryAfter);
+
+  if (Number.isFinite(retryDate)) {
+    return Math.min(
+      Math.max(1000, retryDate - Date.now()),
+      24 * 60 * 60 * 1000
+    );
+  }
+
+  return CLOUDFLARE_COOLDOWN_MS;
+}
+
+function getCloudflareAccountOrder(ids) {
+  const now = Date.now();
+  const order = [];
+
+  for (let offset = 0; offset < ids.length; offset++) {
+    const index = (cloudflareNextAccount + offset) % ids.length;
+    const key = ids[index];
+    const blockedUntil = cloudflareCooldowns.get(key) || 0;
+
+    if (blockedUntil > now) {
+      console.info(
+        "[kira-image] provider=cloudflare account=" +
+        (index + 1) + " event=cooldown_skip"
+      );
+      continue;
+    }
+
+    if (blockedUntil) cloudflareCooldowns.delete(key);
+    order.push(index);
+  }
+
+  return order;
+}
+
 async function generateCloudflareImage(prompt, layout) {
   const ids = splitCredentials(
     process.env.CLOUDFLARE_ACCOUNT_IDS || process.env.CLOUDFLARE_ACCOUNT_ID
@@ -85,7 +142,13 @@ async function generateCloudflareImage(prompt, layout) {
 
   let lastError;
 
-  for (let i = 0; i < ids.length; i++) {
+  const accountOrder = getCloudflareAccountOrder(ids);
+
+  if (!accountOrder.length) {
+    throw new Error("Todas as contas Cloudflare estão em cooldown.");
+  }
+
+  for (const i of accountOrder) {
     try {
       console.info(
         "[kira-image] provider=cloudflare account=" + (i + 1) + " event=start"
@@ -113,6 +176,22 @@ async function generateCloudflareImage(prompt, layout) {
       });
 
       if (!response.ok) {
+        if (response.status === 429) {
+          const cooldownMs = getCloudflareCooldownMs(response);
+
+          cloudflareCooldowns.set(
+            ids[i],
+            Date.now() + cooldownMs
+          );
+
+          console.warn(
+            "[kira-image] provider=cloudflare account=" +
+            (i + 1) +
+            " event=cooldown_start seconds=" +
+            Math.ceil(cooldownMs / 1000)
+          );
+        }
+
         throw new Error("HTTP " + response.status);
       }
 
@@ -148,6 +227,8 @@ async function generateCloudflareImage(prompt, layout) {
 
       const filename = randomUUID() + "." + extension;
       await fs.writeFile(path.join(imageDir, filename), bytes);
+
+      cloudflareNextAccount = (i + 1) % ids.length;
 
       console.info(
         "[kira-image] provider=cloudflare account=" + (i + 1) + " status=200"
