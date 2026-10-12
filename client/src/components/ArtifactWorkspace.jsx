@@ -51,7 +51,7 @@ function previewDocument(files){
   return doc;
 }
 
-export default function ArtifactWorkspace({artifact,token,onArtifactChange,onClose}){
+export default function ArtifactWorkspace({artifact,token,onArtifactChange,onRequestFix,onClose}){
   const files=artifact?.files||[];
   const [selectedPath,setSelectedPath]=useState(files[0]?.path||"");
   const [versions,setVersions]=useState([]),[busy,setBusy]=useState(false),[error,setError]=useState("");
@@ -69,23 +69,34 @@ export default function ArtifactWorkspace({artifact,token,onArtifactChange,onClo
   async function downloadReadme(){try{const r=await generateProjectReadme(token,artifact.id);downloadBlob(r.filename,new Blob([r.content],{type:"text/markdown;charset=utf-8"}));}catch(e){setError(e.message);}}
   async function downloadChanged(){try{const r=await getVersionChanges(token,artifact.id,artifact.version||1);if(!r.files?.length){setError("Esta versão não possui arquivos criados/alterados para exportar.");return;}downloadBlob(`${safeProjectName(artifact.name)}-v${artifact.version}-alterados.zip`,makeZip(r.files));}catch(e){setError(e.message);}}
 
-  return <section className="artifact-workspace flex min-w-0 flex-col border-l border-line bg-panel/95 w-[46%] min-w-[420px] max-w-[760px] max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:h-[100dvh] max-lg:w-screen max-lg:max-w-none max-lg:min-w-0">
+  return <section className="artifact-workspace flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-line bg-panel/95 w-[46%] min-w-[420px] max-w-[760px] max-lg:fixed max-lg:inset-0 max-lg:z-50 max-lg:h-[100dvh] max-lg:w-screen max-lg:max-w-none max-lg:min-w-0">
     <header className="flex min-h-14 flex-wrap items-center justify-between gap-2 border-b border-line px-2 sm:px-3 py-2">
       <div className="min-w-0"><div className="flex items-center gap-2"><p className="truncate text-sm font-display font-semibold text-paper">{artifact.name}</p>{artifact.id&&<span className="rounded bg-neon/10 px-1.5 py-0.5 text-[10px] font-mono text-neon">v{artifact.version||1}</span>}{dirty&&<span className="text-[10px] text-amber-300">● não salvo</span>}</div><p className="text-[11px] font-mono text-mist">{files.length} arquivo(s)</p></div>
       <div className="flex min-w-0 flex-wrap items-center justify-end gap-1">
         {artifact.id&&versions.length>0&&<div className="relative flex items-center"><History size={14} className="pointer-events-none absolute left-2 text-mist"/><select disabled={busy} value={artifact.version||1} onChange={e=>openVersion(Number(e.target.value))} className="max-w-[210px] rounded-lg border border-line bg-panel2 py-1.5 pl-7 pr-2 text-xs text-paper outline-none">{versions.map(v=><option key={v.version} value={v.version}>v{v.version} — {v.summary||"versão"}</option>)}</select></div>}
         {artifact.id&&versions.length>1&&<button disabled={busy} onClick={()=>restore(artifact.version||1)} className="rounded-lg p-2 text-mist hover:bg-panel2 hover:text-paper" title="Restaurar versão"><RotateCcw size={15}/></button>}
+        {artifact.id&&<button
+          onClick={() => onRequestFix?.(
+            "Revise e corrija os possíveis erros de compilação, importação e execução do projeto " +
+            artifact.name +
+            ". Preserve a estrutura, as funcionalidades existentes e a stack. " +
+            "Altere somente os arquivos necessários e crie uma nova versão do projeto."
+          )}
+          disabled={busy}
+          className="rounded-lg px-2 py-1.5 text-xs text-neon hover:bg-neon/10"
+          title="Solicitar revisão e correção do projeto"
+        >Corrigir com Kira</button>}
         {artifact.id&&<button onClick={downloadReadme} className="rounded-lg px-2 py-1.5 text-xs text-mist hover:bg-panel2 hover:text-paper">README</button>}
         {artifact.id&&<button onClick={downloadChanged} className="rounded-lg px-2 py-1.5 text-xs text-mist hover:bg-panel2 hover:text-paper">Δ ZIP</button>}
         <button onClick={()=>downloadProject(artifact)} className="rounded-lg p-2 text-mist hover:bg-panel2 hover:text-paper" title="Baixar ZIP"><FolderArchive size={16}/></button><button onClick={onClose} className="rounded-lg p-2 text-mist hover:bg-panel2 hover:text-paper"><X size={17}/></button>
       </div>
     </header>
     {error&&<div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div>}
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 flex-1 overflow-hidden">
       <aside className="w-28 sm:w-36 xl:w-40 shrink-0 overflow-y-auto border-r border-line bg-ink/20 p-2">{files.map(file=><button key={file.path} onClick={()=>{if(dirty&&!confirm("Descartar alteração não salva?"))return;setSelectedPath(file.path);setTab("code");}} className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-mono ${selected.path===file.path?"bg-neon/15 text-neon":"text-mist hover:bg-panel2 hover:text-paper"}`}><FileCode2 size={13}/><span className="truncate">{file.path}</span></button>)}</aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-11 flex-wrap items-center justify-between gap-1 border-b border-line px-2 sm:px-3"><div className="flex items-center gap-1"><button onClick={()=>setTab("code")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="code"?"bg-neon/15 text-neon":"text-mist"}`}><Code2 size={14}/>Código</button><button onClick={()=>setTab("preview")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="preview"?"bg-neon/15 text-neon":"text-mist"}`}><Eye size={14}/>Preview</button></div><div className="flex items-center gap-1">{tab==="code"&&artifact.id&&<button disabled={!dirty||busy} onClick={saveManual} className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-mist enabled:hover:bg-panel2 enabled:hover:text-paper disabled:opacity-40"><Save size={14}/>Salvar v{(versions[0]?.version||artifact.version||1)+1}</button>}<button onClick={()=>downloadFile(selected)} className="rounded-md p-1.5 text-mist hover:bg-panel2 hover:text-paper" title="Baixar arquivo"><Download size={14}/></button></div></div>
-        <div className="min-h-0 flex-1 bg-[#06101f]">
+        <div className="min-h-0 flex-1 overflow-hidden bg-[#06101f]">
           {tab==="code"?<Editor height="100%" path={selected.path} language={languageFor(selected)} value={draft} onChange={v=>setDraft(v??"")} theme="vs-dark" options={{fontSize:13,fontFamily:"'Cascadia Code','Fira Code',Consolas,monospace",fontLigatures:true,minimap:{enabled:false},wordWrap:"off",automaticLayout:true,scrollBeyondLastLine:false,padding:{top:14,bottom:14},renderLineHighlight:"all",smoothScrolling:true}}/>:(isBundledProject(files)
             ? <Suspense fallback={<div className="p-5 text-sm text-mist">Preparando ambiente React...</div>}>
                 <ProjectRunner files={files.map(f=>f.path===selected.path?{...f,content:draft}:f)}/>

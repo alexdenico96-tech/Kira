@@ -209,7 +209,7 @@ export default function App() {
           </>
         )}
         </div>
-        {activeArtifact && <ArtifactWorkspace artifact={activeArtifact} token={session.token} onArtifactChange={setActiveArtifact} onClose={() => setActiveArtifact(null)} />}
+        {activeArtifact && <ArtifactWorkspace artifact={activeArtifact} token={session.token} onArtifactChange={setActiveArtifact} onRequestFix={handleSubmit} onClose={() => setActiveArtifact(null)} />}
       </div>
     </div>
   );
