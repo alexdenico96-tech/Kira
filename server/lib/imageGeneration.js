@@ -255,7 +255,7 @@ export async function generateKiraImage(prompt) {
   }
 
   const cleanPrompt = text
-    .replace(/^(crie|cria|criar|gere|gera|gerar|desenhe|desenha|faça)\\s+(uma?\\s+)?(imagem|foto|ilustração|retrato)\\s+(de|do|da|mostrando|com)?\\s*/i, "")
+    .replace(/^(crie|cria|criar|gere|gera|gerar|desenhe|desenha|faça)\s+(uma?\s+)?(imagem|foto|ilustração|retrato)\s+(de|do|da|mostrando|com)?\s*/i, "")
     .trim();
 
   const layout = detectImageLayout(cleanPrompt);
