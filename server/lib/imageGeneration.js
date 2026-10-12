@@ -70,7 +70,30 @@ function detectImageExtension(bytes) {
 
 // KIRA_CLOUDFLARE_ACCOUNT_MANAGER_V1
 const cloudflareCooldowns = new Map();
+const cloudflareActiveRequests = new Map();
 let cloudflareNextAccount = 0;
+
+// KIRA_CLOUDFLARE_CONCURRENCY_V1
+function getCloudflareActiveRequests(accountId) {
+  return cloudflareActiveRequests.get(accountId) || 0;
+}
+
+function reserveCloudflareAccount(accountId) {
+  cloudflareActiveRequests.set(
+    accountId,
+    getCloudflareActiveRequests(accountId) + 1
+  );
+}
+
+function releaseCloudflareAccount(accountId) {
+  const active = getCloudflareActiveRequests(accountId);
+
+  if (active <= 1) {
+    cloudflareActiveRequests.delete(accountId);
+  } else {
+    cloudflareActiveRequests.set(accountId, active - 1);
+  }
+}
 
 const CLOUDFLARE_COOLDOWN_MS = 15 * 60 * 1000;
 
@@ -119,6 +142,15 @@ function getCloudflareAccountOrder(ids) {
     }
 
     if (blockedUntil) cloudflareCooldowns.delete(key);
+
+    if (getCloudflareActiveRequests(key) > 0) {
+      console.info(
+        "[kira-image] provider=cloudflare account=" +
+        (index + 1) + " event=busy_skip"
+      );
+      continue;
+    }
+
     order.push(index);
   }
 
@@ -149,6 +181,18 @@ async function generateCloudflareImage(prompt, layout) {
   }
 
   for (const i of accountOrder) {
+    const blockedUntil = cloudflareCooldowns.get(ids[i]) || 0;
+
+    if (blockedUntil > Date.now()) {
+      continue;
+    }
+
+    if (getCloudflareActiveRequests(ids[i]) > 0) {
+      continue;
+    }
+
+    reserveCloudflareAccount(ids[i]);
+
     try {
       console.info(
         "[kira-image] provider=cloudflare account=" + (i + 1) + " event=start"
@@ -241,6 +285,8 @@ async function generateCloudflareImage(prompt, layout) {
         "[kira-image] provider=cloudflare account=" +
         (i + 1) + " failed=" + error.message
       );
+    } finally {
+      releaseCloudflareAccount(ids[i]);
     }
   }
 
