@@ -43,7 +43,57 @@ function GeneratedImage({ src }) {
       A imagem não pôde ser carregada pelo serviço de geração. Tente novamente mais tarde.
     </div>
   );
-  return <img src={src} alt="Gerada pela Kira" className="mt-2 max-w-full sm:max-w-sm rounded-xl border border-line" loading="lazy" onError={() => setFailed(true)} />;
+  async function downloadGeneratedImage() {
+    try {
+      const response = await fetch(src);
+
+      if (!response.ok) {
+        throw new Error("Não foi possível baixar a imagem.");
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+
+      const extension = blob.type.includes("jpeg")
+        ? "jpg"
+        : blob.type.includes("webp")
+          ? "webp"
+          : "png";
+
+      link.href = url;
+      link.download = "kira-imagem-" + Date.now() + "." + extension;
+
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (error) {
+      console.error("[kira-image] download_failed", error);
+      alert("Não foi possível baixar a imagem. Tente novamente.");
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-col items-start gap-2">
+      <img
+        src={src}
+        alt="Gerada pela Kira"
+        className="max-w-full sm:max-w-sm rounded-xl border border-line"
+        loading="lazy"
+        onError={() => setFailed(true)}
+      />
+      <button
+        type="button"
+        onClick={downloadGeneratedImage}
+        className="flex items-center gap-2 rounded-lg border border-line bg-panel2 px-3 py-2 text-sm text-paper hover:border-neon/50 transition-colors"
+      >
+        <FileDown size={16} className="text-neon" />
+        Baixar imagem
+      </button>
+    </div>
+  );
 }
 
 function RevealedMarkdown({ content }) {

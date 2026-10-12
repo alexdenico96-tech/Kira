@@ -12,7 +12,63 @@ const imageDir = path.resolve(currentDir, "../generated-images");
 const splitCredentials = value =>
   String(value || "").split(",").map(x => x.trim()).filter(Boolean);
 
-async function generateCloudflareImage(prompt) {
+// KIRA_AUTO_IMAGE_LAYOUT_V1
+function detectImageLayout(prompt) {
+  const text = String(prompt || "").toLowerCase();
+
+  // A proporção explícita tem prioridade sobre palavras genéricas.
+  if (/9\s*[:x/]\s*16|1080\s*[x×]\s*1920/i.test(text)) {
+    return { width: 576, height: 1024, name: "vertical" };
+  }
+
+  if (/16\s*[:x/]\s*9|1920\s*[x×]\s*1080/i.test(text)) {
+    return { width: 1024, height: 576, name: "horizontal" };
+  }
+
+  if (/vertical|stories|story|reels|shorts|tiktok|celular|smartphone|telefone|mobile/i.test(text)) {
+    return { width: 576, height: 1024, name: "vertical" };
+  }
+
+  if (/horizontal|paisagem|panor[aâ]mic|widescreen|desktop|monitor|computador|youtube/i.test(text)) {
+    return { width: 1024, height: 576, name: "horizontal" };
+  }
+
+  return { width: 1024, height: 1024, name: "square" };
+}
+
+function detectImageStyle(prompt) {
+  const text = String(prompt || "").toLowerCase();
+
+  if (/anime|mang[aá]|ghibli/i.test(text)) return "anime illustration";
+  if (/3d|render|pixar|blender/i.test(text)) return "3D render";
+  if (/aquarela|watercolor/i.test(text)) return "watercolor illustration";
+  if (/cartoon|desenho animado/i.test(text)) return "cartoon illustration";
+  if (/pixel art/i.test(text)) return "pixel art";
+  if (/pintura|painting|[oó]leo sobre tela/i.test(text)) return "painting";
+  if (/fot[oó]graf|realista|realistic|foto|photoreal/i.test(text)) {
+    return "photorealistic photography";
+  }
+
+  return "natural detailed visual style";
+}
+
+function detectImageExtension(bytes) {
+  if (bytes.subarray(0, 8).toString("hex") === "89504e470d0a1a0a") {
+    return "png";
+  }
+  if (bytes.subarray(0, 3).toString("hex") === "ffd8ff") {
+    return "jpg";
+  }
+  if (
+    bytes.subarray(0, 4).toString() === "RIFF" &&
+    bytes.subarray(8, 12).toString() === "WEBP"
+  ) {
+    return "webp";
+  }
+  throw new Error("Formato de imagem Cloudflare não reconhecido.");
+}
+
+async function generateCloudflareImage(prompt, layout) {
   const ids = splitCredentials(
     process.env.CLOUDFLARE_ACCOUNT_IDS || process.env.CLOUDFLARE_ACCOUNT_ID
   );
@@ -37,6 +93,8 @@ async function generateCloudflareImage(prompt) {
 
       const form = new FormData();
       form.append("prompt", prompt);
+      form.append("width", String(layout.width));
+      form.append("height", String(layout.height));
 
       const url =
         "https://api.cloudflare.com/client/v4/accounts/" +
@@ -79,7 +137,7 @@ async function generateCloudflareImage(prompt) {
         );
 
         bytes = Buffer.from(base64, "base64");
-        extension = "png";
+        extension = detectImageExtension(bytes);
       }
 
       if (bytes.length < 100 || bytes.length > 20 * 1024 * 1024) {
@@ -119,9 +177,14 @@ export async function generateKiraImage(prompt) {
     .replace(/^(crie|cria|criar|gere|gera|gerar|desenhe|desenha|faça)\\s+(uma?\\s+)?(imagem|foto|ilustração|retrato)\\s+(de|do|da|mostrando|com)?\\s*/i, "")
     .trim();
 
+  const layout = detectImageLayout(cleanPrompt);
+  const style = detectImageStyle(cleanPrompt);
+
   const enhancedPrompt = [
     "Create one image faithfully following this description:",
     cleanPrompt,
+    "Visual style: " + style + ".",
+    "Composition: " + layout.name + ".",
     "PRIORITY: The main subject must be immediately recognizable.",
     "Preserve the exact identity, species, colors, clothing,",
     "accessories, actions, positions and setting requested.",
@@ -131,10 +194,15 @@ export async function generateKiraImage(prompt) {
     "Respect the requested visual style and composition."
   ].join(" ");
 
+  console.info(
+    "[kira-image] layout=" + layout.name +
+    " size=" + layout.width + "x" + layout.height +
+    " style=" + style
+  );
   console.info("[kira-image] prompt_chars=" + enhancedPrompt.length);
 
   try {
-    return await generateCloudflareImage(enhancedPrompt);
+    return await generateCloudflareImage(enhancedPrompt, layout);
   } catch (error) {
     console.warn(
       "[kira-image] cloudflare unavailable; using pollinations:",
