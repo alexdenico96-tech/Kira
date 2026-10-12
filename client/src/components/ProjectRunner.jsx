@@ -1,9 +1,10 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   SandpackProvider,
   SandpackPreview,
   SandpackConsole,
-  SandpackLayout
+  SandpackLayout,
+  useSandpack
 } from "@codesandbox/sandpack-react";
 
 function normalizePath(path) {
@@ -35,7 +36,43 @@ function prepareFiles(files) {
   return result;
 }
 
-export default function ProjectRunner({ files = [] }) {
+function ProjectDiagnostics({ onDiagnosticsChange }) {
+  const { sandpack } = useSandpack();
+  const [visibleError, setVisibleError] = useState("");
+
+  const currentError = sandpack.error
+    ? String(sandpack.error.message || sandpack.error)
+    : "";
+
+  useEffect(() => {
+    if (currentError) {
+      setVisibleError(currentError);
+    } else if (sandpack.status === "idle") {
+      setVisibleError("");
+    }
+  }, [currentError, sandpack.status]);
+
+  useEffect(() => {
+    onDiagnosticsChange?.(visibleError);
+  }, [visibleError, onDiagnosticsChange]);
+
+  if (!visibleError) return null;
+
+  return (
+    <div className="border-t border-red-500/30 bg-red-950/30 p-3">
+      <h3 className="mb-2 text-sm font-semibold text-red-300">
+        Erros encontrados no projeto
+      </h3>
+      <div className="rounded-lg border border-red-500/20 bg-black/30 p-3">
+        <p className="whitespace-pre-wrap break-words font-mono text-xs text-red-200">
+          {visibleError}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+export default function ProjectRunner({ files = [], onDiagnosticsChange }) {
   const projectFiles = useMemo(
     () => prepareFiles(files),
     [files]
@@ -81,6 +118,7 @@ export default function ProjectRunner({ files = [] }) {
               showOpenInCodeSandbox={false}
               style={{ height: "65vh" }}
             />
+            <ProjectDiagnostics onDiagnosticsChange={onDiagnosticsChange} />
             <SandpackConsole
               style={{ height: 160 }}
             />

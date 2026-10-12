@@ -110,7 +110,7 @@ export default function App() {
     const value = (text ?? input).trim();
     const { image, audio } = attachments;
     if (!value && !image && !audio) return;
-    if (submittingRef.current) return;
+    if (submittingRef.current) return false;
     submittingRef.current = true;
 
     const userMessage = {
@@ -149,9 +149,11 @@ export default function App() {
       ]);
       if (res.artifactFiles?.length) setActiveArtifact({ id: res.artifactId || null, version: res.artifactVersion || 1, name: res.artifactName || "Artifact", files: res.artifactFiles });
       refreshConversations();
+      return true;
     } catch (e) {
       setError(e.message);
       setMessages((m) => [...m, { role: "assistant", content: e.message, isError: true }]);
+      return false;
     } finally {
       submittingRef.current = false;
       setLoading(false);

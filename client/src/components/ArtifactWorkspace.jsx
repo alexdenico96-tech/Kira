@@ -56,11 +56,20 @@ export default function ArtifactWorkspace({artifact,token,onArtifactChange,onReq
   const [selectedPath,setSelectedPath]=useState(files[0]?.path||"");
   const [versions,setVersions]=useState([]),[busy,setBusy]=useState(false),[error,setError]=useState("");
   const [tab,setTab]=useState("code"),[draft,setDraft]=useState("");
+  const [diagnostics,setDiagnostics]=useState("");
+  const [diagnosticsVersion,setDiagnosticsVersion]=useState(null);
+  const [fixRequested,setFixRequested]=useState(false);
   const selected=useMemo(()=>files.find(f=>f.path===selectedPath)||files[0],[files,selectedPath]);
   const dirty=selected?draft!==String(selected.content??""):false;
   useEffect(()=>{setSelectedPath(files[0]?.path||"");},[artifact?.id,artifact?.version]);
   useEffect(()=>{setDraft(String(selected?.content??""));},[selected?.path,selected?.content]);
   useEffect(()=>{if(!artifact?.id||!token){setVersions([]);return;}listArtifactVersions(token,artifact.id).then(setVersions).catch(e=>setError(e.message));},[artifact?.id,artifact?.version,token]);
+  useEffect(()=>{
+    setDiagnostics("");
+    setDiagnosticsVersion(null);
+    setFixRequested(false);
+  },[artifact?.id,artifact?.version]);
+
   if(!artifact||!selected)return null;
 
   async function openVersion(version){if(!artifact.id)return;setBusy(true);setError("");try{const d=await getArtifact(token,artifact.id,version);onArtifactChange?.({id:d.id,version:d.version,name:d.name,files:d.files});}catch(e){setError(e.message);}finally{setBusy(false);}}
@@ -76,14 +85,31 @@ export default function ArtifactWorkspace({artifact,token,onArtifactChange,onReq
         {artifact.id&&versions.length>0&&<div className="relative flex items-center"><History size={14} className="pointer-events-none absolute left-2 text-mist"/><select disabled={busy} value={artifact.version||1} onChange={e=>openVersion(Number(e.target.value))} className="max-w-[210px] rounded-lg border border-line bg-panel2 py-1.5 pl-7 pr-2 text-xs text-paper outline-none">{versions.map(v=><option key={v.version} value={v.version}>v{v.version} — {v.summary||"versão"}</option>)}</select></div>}
         {artifact.id&&versions.length>1&&<button disabled={busy} onClick={()=>restore(artifact.version||1)} className="rounded-lg p-2 text-mist hover:bg-panel2 hover:text-paper" title="Restaurar versão"><RotateCcw size={15}/></button>}
         {artifact.id&&<button
-          onClick={() => onRequestFix?.(
-            "Revise e corrija os possíveis erros de compilação, importação e execução do projeto " +
-            artifact.name +
-            ". Preserve a estrutura, as funcionalidades existentes e a stack. " +
-            "Altere somente os arquivos necessários e crie uma nova versão do projeto."
-          )}
-          disabled={busy}
-          className="rounded-lg px-2 py-1.5 text-xs text-neon hover:bg-neon/10"
+          onClick={async () => {
+            if (tab!=="preview" || dirty || !diagnostics || diagnosticsVersion!==artifact.version || fixRequested || busy || !onRequestFix) return;
+
+            setFixRequested(true);
+
+            try {
+              const success = await onRequestFix(
+              "Corrija os erros de compilação identificados no projeto " +
+              artifact.name +
+              ". Preserve a stack, a estrutura e as funcionalidades existentes. " +
+              "Altere somente os arquivos necessários e crie uma nova versão. " +
+              "Diagnósticos do Sandpack:\n\n" +
+              diagnostics
+              );
+
+              if (!success) {
+                setFixRequested(false);
+              }
+            } catch (e) {
+              setFixRequested(false);
+              setError(e.message || "Falha ao solicitar correção.");
+            }
+          }}
+          disabled={busy || tab!=="preview" || dirty || !diagnostics || diagnosticsVersion!==artifact.version || fixRequested || !onRequestFix}
+          className="rounded-lg px-2 py-1.5 text-xs text-neon enabled:hover:bg-neon/10 disabled:cursor-not-allowed disabled:opacity-30"
           title="Solicitar revisão e correção do projeto"
         >Corrigir com Kira</button>}
         {artifact.id&&<button onClick={downloadReadme} className="rounded-lg px-2 py-1.5 text-xs text-mist hover:bg-panel2 hover:text-paper">README</button>}
@@ -93,20 +119,23 @@ export default function ArtifactWorkspace({artifact,token,onArtifactChange,onReq
     </header>
     {error&&<div className="border-b border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">{error}</div>}
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <aside className="w-28 sm:w-36 xl:w-40 shrink-0 overflow-y-auto border-r border-line bg-ink/20 p-2">{files.map(file=><button key={file.path} onClick={()=>{if(dirty&&!confirm("Descartar alteração não salva?"))return;setSelectedPath(file.path);setTab("code");}} className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-mono ${selected.path===file.path?"bg-neon/15 text-neon":"text-mist hover:bg-panel2 hover:text-paper"}`}><FileCode2 size={13}/><span className="truncate">{file.path}</span></button>)}</aside>
+      <aside className="w-28 sm:w-36 xl:w-40 shrink-0 overflow-y-auto border-r border-line bg-ink/20 p-2">{files.map(file=><button key={file.path} onClick={()=>{if(dirty&&!confirm("Descartar alteração não salva?"))return;setDiagnostics("");setSelectedPath(file.path);setTab("code");}} className={`mb-1 flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-xs font-mono ${selected.path===file.path?"bg-neon/15 text-neon":"text-mist hover:bg-panel2 hover:text-paper"}`}><FileCode2 size={13}/><span className="truncate">{file.path}</span></button>)}</aside>
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex min-h-11 flex-wrap items-center justify-between gap-1 border-b border-line px-2 sm:px-3"><div className="flex items-center gap-1"><button onClick={()=>setTab("code")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="code"?"bg-neon/15 text-neon":"text-mist"}`}><Code2 size={14}/>Código</button><button onClick={()=>setTab("preview")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="preview"?"bg-neon/15 text-neon":"text-mist"}`}><Eye size={14}/>Preview</button></div><div className="flex items-center gap-1">{tab==="code"&&artifact.id&&<button disabled={!dirty||busy} onClick={saveManual} className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-mist enabled:hover:bg-panel2 enabled:hover:text-paper disabled:opacity-40"><Save size={14}/>Salvar v{(versions[0]?.version||artifact.version||1)+1}</button>}<button onClick={()=>downloadFile(selected)} className="rounded-md p-1.5 text-mist hover:bg-panel2 hover:text-paper" title="Baixar arquivo"><Download size={14}/></button></div></div>
+        <div className="flex min-h-11 flex-wrap items-center justify-between gap-1 border-b border-line px-2 sm:px-3"><div className="flex items-center gap-1"><button onClick={()=>{setDiagnostics("");setTab("code");}} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="code"?"bg-neon/15 text-neon":"text-mist"}`}><Code2 size={14}/>Código</button><button onClick={()=>setTab("preview")} className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs ${tab==="preview"?"bg-neon/15 text-neon":"text-mist"}`}><Eye size={14}/>Preview</button></div><div className="flex items-center gap-1">{tab==="code"&&artifact.id&&<button disabled={!dirty||busy} onClick={saveManual} className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-mist enabled:hover:bg-panel2 enabled:hover:text-paper disabled:opacity-40"><Save size={14}/>Salvar v{(versions[0]?.version||artifact.version||1)+1}</button>}<button onClick={()=>downloadFile(selected)} className="rounded-md p-1.5 text-mist hover:bg-panel2 hover:text-paper" title="Baixar arquivo"><Download size={14}/></button></div></div>
         <div className="min-h-0 flex-1 overflow-hidden bg-[#06101f]">
-          {tab==="code"?<Editor height="100%" path={selected.path} language={languageFor(selected)} value={draft} onChange={v=>setDraft(v??"")} theme="vs-dark" options={{fontSize:13,fontFamily:"'Cascadia Code','Fira Code',Consolas,monospace",fontLigatures:true,minimap:{enabled:false},wordWrap:"off",automaticLayout:true,scrollBeyondLastLine:false,padding:{top:14,bottom:14},renderLineHighlight:"all",smoothScrolling:true}}/>:(isBundledProject(files)
+          {tab==="code"?<Editor height="100%" path={selected.path} language={languageFor(selected)} value={draft} onChange={v=>{setDiagnostics("");setDraft(v??"");}} theme="vs-dark" options={{fontSize:13,fontFamily:"'Cascadia Code','Fira Code',Consolas,monospace",fontLigatures:true,minimap:{enabled:false},wordWrap:"off",automaticLayout:true,scrollBeyondLastLine:false,padding:{top:14,bottom:14},renderLineHighlight:"all",smoothScrolling:true}}/>:(isBundledProject(files)
             ? <Suspense fallback={<div className="p-5 text-sm text-mist">Preparando ambiente React...</div>}>
-                <ProjectRunner files={files.map(f=>f.path===selected.path?{...f,content:draft}:f)}/>
+                <ProjectRunner
+                  files={files}
+                  onDiagnosticsChange={message=>{setDiagnostics(message);setDiagnosticsVersion(artifact.version);}}
+                />
               </Suspense>
             : <iframe
                 title={`Preview ${artifact.name}`}
                 sandbox="allow-scripts allow-forms allow-modals"
                 srcDoc={previewDocument(files.map(f=>f.path===selected.path?{...f,content:draft}:f))}
                 className="h-full w-full border-0 bg-white"
-              />)}}
+              />)}
         </div>
       </div>
     </div>
