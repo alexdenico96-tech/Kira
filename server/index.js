@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { signToken, requireAuth } from "./lib/auth.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
-import { callGemini, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
+import { callGemini, transcribeKiraAudio, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
 import { generateKiraImage } from "./lib/imageGeneration.js";
 import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
@@ -425,7 +425,20 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       return res.status(429).json({ error: "O app atingiu o limite diário de uso gratuito da IA. Tente novamente amanhã." });
     }
 
-    const textMessage = message || (image ? "Descreva essa imagem." : "Ouça esse áudio e responda.");
+    let textMessage = message || (image ? "Descreva essa imagem." : "");
+
+    if (audio?.data) {
+      try {
+        const transcript = await transcribeKiraAudio(audio);
+        textMessage = [message, transcript].filter(Boolean).join("\n");
+        console.info(`[kira-audio] transcribed chars=${transcript.length}`);
+      } catch (audioError) {
+        console.warn("[kira-audio] transcription_failed", audioError.status || audioError.message);
+        return res.status(502).json({
+          error: "Não foi possível entender o áudio. Tente gravar novamente."
+        });
+      }
+    }
 
     let conv = conversationId ? await getConversation(req.user.id, conversationId) : null;
     if (!conv) {
@@ -444,10 +457,10 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     console.info(`[kira-complexity] level=${complexity} path=${complexity==="advanced"?"groq-first":complexity==="project"?"workspace":"fast-chat"}`);
     const currentParts = [{ text: textMessage }];
     if (image?.data) currentParts.push({ inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } });
-    if (audio?.data) currentParts.push({ inlineData: { mimeType: audio.mimeType || "audio/webm", data: audio.data } });
+    // Áudio já transcrito; a solicitação segue como texto pelo fluxo normal.
     const contents = [...history, { role: "user", parts: currentParts }];
 
-    const route = routeRequest({message:textMessage,image,audio,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
+    const route = routeRequest({message:textMessage,image,audio:null,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
 
     // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
     if(route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage)){
@@ -474,7 +487,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     try {
       // KIRA_MULTIMODAL_V2: gerar imagem sem depender de function calling do modelo textual.
       // Preserva todas as rotas anteriores para os demais pedidos.
-      if (!image?.data && !audio?.data && !editingArtifact && kiraWantsGeneratedImage(textMessage)) {
+      if (!image?.data && !editingArtifact && kiraWantsGeneratedImage(textMessage)) {
         const visualPrompt = /\b(realista|hiperrealista|fotorealista|fotogr[aá]fic[ao]|photorealistic|realistic)\b/i.test(textMessage)
           ? textMessage + '. Photorealistic image, natural physically plausible lighting, realistic materials and proportions, coherent anatomy and perspective, faithful subject and composition, no unrelated elements.'
           : textMessage;
@@ -595,7 +608,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     } catch (err) {
       console.error(`[chat] Gemini falhou (status ${err.status}, code ${err.code}):`, err.message);
       // Não anunciar uma imagem que não foi gerada.
-      if (!image?.data && !audio?.data && kiraWantsGeneratedImage(textMessage)) {
+      if (!image?.data && kiraWantsGeneratedImage(textMessage)) {
         console.warn("[kira-image] generation_failed:", err.message);
         return res.status(502).json({
           error: "Não consegui gerar a imagem agora. Tente novamente."

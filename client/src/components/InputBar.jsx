@@ -2,7 +2,13 @@ import { useRef, useEffect, useState } from "react";
 import { ImagePlus, Mic, Square, X } from "lucide-react";
 import { fileToBase64 } from "../lib/api.js";
 
-export default function InputBar({ value, onChange, onSubmit, loading, autoFocus }) {
+export default function InputBar({
+  value,
+  onChange,
+  onSubmit,
+  loading,
+  autoFocus,
+}) {
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -34,7 +40,12 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     }
     setError(null);
     const base64 = await fileToBase64(file);
-    setPendingImage({ base64, mimeType: file.type, previewUrl: URL.createObjectURL(file), name: file.name });
+    setPendingImage({
+      base64,
+      mimeType: file.type,
+      previewUrl: URL.createObjectURL(file),
+      name: file.name,
+    });
   }
 
   async function toggleRecording() {
@@ -51,15 +62,45 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
       recorder.ondataavailable = (e) => audioChunksRef.current.push(e.data);
       recorder.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
-        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        const blob = new Blob(audioChunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
         const base64 = await fileToBase64(blob);
-        setPendingAudio({ base64, mimeType: blob.type, previewUrl: URL.createObjectURL(blob) });
+
+        if (!base64) {
+          setError("A gravação ficou vazia. Tente novamente.");
+          return;
+        }
+
+        const sent = await onSubmit(value.trim(), {
+          image: pendingImage
+            ? { data: pendingImage.base64, mimeType: pendingImage.mimeType }
+            : undefined,
+          audio: {
+            data: base64,
+            mimeType: blob.type,
+          },
+        });
+
+        if (sent) {
+          onChange("");
+          setPendingImage(null);
+          setPendingAudio(null);
+        } else {
+          setPendingAudio({
+            base64,
+            mimeType: blob.type,
+            previewUrl: URL.createObjectURL(blob),
+          });
+        }
       };
       recorder.start();
       mediaRecorderRef.current = recorder;
       setRecording(true);
     } catch {
-      setError("Não consegui acessar o microfone. Confira as permissões do navegador.");
+      setError(
+        "Não consegui acessar o microfone. Confira as permissões do navegador.",
+      );
     }
   }
 
@@ -69,9 +110,13 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     if (!text && !pendingImage && !pendingAudio) return;
 
     onSubmit(text, {
-      image: pendingImage ? { data: pendingImage.base64, mimeType: pendingImage.mimeType } : undefined,
-      audio: pendingAudio ? { data: pendingAudio.base64, mimeType: pendingAudio.mimeType } : undefined,
-      audioPreviewUrl: pendingAudio?.previewUrl
+      image: pendingImage
+        ? { data: pendingImage.base64, mimeType: pendingImage.mimeType }
+        : undefined,
+      audio: pendingAudio
+        ? { data: pendingAudio.base64, mimeType: pendingAudio.mimeType }
+        : undefined,
+      audioPreviewUrl: pendingAudio?.previewUrl,
     });
 
     onChange("");
@@ -93,7 +138,11 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
         <div className="flex flex-wrap items-center gap-2 mb-2 px-1">
           {pendingImage && (
             <div className="relative">
-              <img src={pendingImage.previewUrl} alt="Anexo" className="w-12 h-12 rounded-lg object-cover border border-line" />
+              <img
+                src={pendingImage.previewUrl}
+                alt="Anexo"
+                className="w-12 h-12 rounded-lg object-cover border border-line"
+              />
               <button
                 type="button"
                 onClick={() => setPendingImage(null)}
@@ -106,18 +155,34 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
           {pendingAudio && (
             <div className="flex items-center gap-1.5 rounded-full bg-panel2 border border-line px-3 py-1.5 text-xs font-mono text-paper">
               🎤
-              <audio src={pendingAudio.previewUrl} controls className="h-6 max-w-[140px]" />
-              <button type="button" onClick={() => setPendingAudio(null)} className="text-mist hover:text-coral">
+              <audio
+                src={pendingAudio.previewUrl}
+                controls
+                className="h-6 max-w-[140px]"
+              />
+              <button
+                type="button"
+                onClick={() => setPendingAudio(null)}
+                className="text-mist hover:text-coral"
+              >
                 <X size={12} />
               </button>
             </div>
           )}
-          {error && <span className="text-xs font-mono text-coral">{error}</span>}
+          {error && (
+            <span className="text-xs font-mono text-coral">{error}</span>
+          )}
         </div>
       )}
 
       <div className="flex items-center gap-2 rounded-full bg-panel2 border border-line px-4 py-3.5 shadow-lg shadow-black/20 focus-within:border-neon/50 transition-colors">
-        <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={handleImageSelect}
+        />
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
@@ -132,7 +197,9 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
           onClick={toggleRecording}
           aria-label={recording ? "Parar gravação" : "Gravar áudio"}
           className={`w-7 h-7 flex items-center justify-center rounded-full transition-colors shrink-0 ${
-            recording ? "text-coral animate-pulse" : "text-mist hover:text-paper hover:bg-panel"
+            recording
+              ? "text-coral animate-pulse"
+              : "text-mist hover:text-paper hover:bg-panel"
           }`}
         >
           {recording ? <Square size={16} /> : <Mic size={18} />}
@@ -145,7 +212,8 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
           onChange={(e) => onChange(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Pergunte alguma coisa"
-          className="flex-1 resize-none appearance-none border-0 ring-0 shadow-none bg-transparent outline-none focus:border-0 focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none text-paper placeholder:text-mist/70 font-body text-[15px] max-h-32" style={{ WebkitAppearance: "none", boxShadow: "none" }}
+          className="flex-1 resize-none appearance-none border-0 ring-0 shadow-none bg-transparent outline-none focus:border-0 focus:ring-0 focus:outline-none focus-visible:ring-0 focus-visible:outline-none text-paper placeholder:text-mist/70 font-body text-[15px] max-h-32"
+          style={{ WebkitAppearance: "none", boxShadow: "none" }}
         />
         <button
           type="submit"
