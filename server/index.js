@@ -21,6 +21,7 @@ import { validateArtifact, repairWebConnections, artifactSuccessReply, artifactQ
 import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/developerAgent.js";
 import { inspectProjectFiles } from "./lib/qualityGate.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
+import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 // KIRA_PACKAGE_JSON_REPAIR_V1_INTEGRATION
 import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
 import { repairArtifactNewlines } from "./lib/artifactNewlineRepair.js"; // KIRA_PHASE22_PASSIVE_SYNTAX_GATE
@@ -760,7 +761,45 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         console.info(`[kira-syntax] checked=${syntax.checked} skipped=${syntax.skipped} issues=${syntax.issues.length} warnings=${syntax.warnings.length}`);
         for (const issue of syntax.issues.slice(0, 12)) console.warn(`[kira-syntax] issue=${issue}`);
         for (const warning of syntax.warnings.slice(0, 12)) console.warn(`[kira-syntax] warning=${warning}`);
-        if (syntax.issues.length) return res.status(422).json({ error: "Projeto não salvo: problemas de sintaxe: " + syntax.issues.slice(0,3).join("; ") });
+if (syntax.issues.length) {
+  let repaired = false;
+
+  if (GROQ_ENABLED && !responseArtifactId) {
+    try {
+      const result = await repairProjectSyntax({
+        files: artifactFiles,
+        syntax,
+        requestRepair: async (message) =>
+          callGroqArtifactUpdateFallback({
+            systemInstruction: SYSTEM_PROMPT,
+            message
+          }),
+        inspectSyntax: inspectProjectSyntax,
+        inspectQuality: inspectProjectFiles
+      });
+
+      if (result.repaired) {
+        artifactFiles = result.files;
+        reply = artifactSuccessReply(artifactFiles);
+        repaired = true;
+        console.info("[kira-syntax-repair] success");
+      }
+    } catch (repairError) {
+      console.warn(
+        "[kira-syntax-repair] failed:",
+        repairError.message
+      );
+    }
+  }
+
+  if (!repaired) {
+    return res.status(422).json({
+      error:
+        "Projeto não salvo: problemas de sintaxe: " +
+        syntax.issues.slice(0, 3).join("; ")
+    });
+  }
+}
       } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); return res.status(422).json({ error: "Projeto não salvo: não foi possível verificar a sintaxe." }); }
     }
     if (artifactFiles?.length && !responseArtifactId) {

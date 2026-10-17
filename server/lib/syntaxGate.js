@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { parse } from '@babel/parser';
 
 // Passive diagnostics only. Never executes user-generated project code.
 export function inspectProjectSyntax(files = []) {
@@ -13,8 +14,25 @@ export function inspectProjectSyntax(files = []) {
   const type = pkg?.type === 'module' ? 'module' : 'commonjs';
   for (const f of all) {
     const name = String(f?.path || '').replaceAll('\\', '/');
-    if (!/\.(?:js|mjs|cjs)$/i.test(name)) continue;
+   if (!/\.(?:js|mjs|cjs|jsx|tsx|ts)$/i.test(name)) continue;
     if (checked >= 25 || typeof f.content !== 'string' || Buffer.byteLength(f.content, 'utf8') > 128 * 1024) { skipped++; continue; }
+    // Analisa JSX e TypeScript sem executar o código gerado.
+if (/\.(?:jsx|tsx|ts)$/i.test(name)) {
+  try {
+    parse(f.content, {
+      sourceType: 'unambiguous',
+      plugins: [
+        ...(name.endsWith('.tsx') || name.endsWith('.ts') ? ['typescript'] : []),
+        ...(name.endsWith('.jsx') || name.endsWith('.tsx') ? ['jsx'] : [])
+      ]
+    });
+  } catch (error) {
+    issues.push(`${name}: ${String(error.message).slice(0, 180)}`);
+  }
+
+  checked++;
+  continue;
+}
     // Vite carrega vite.config.js por um loader que suporta ESM mesmo sem package.json type=module.
     // A checagem via stdin deve refletir essa semântica, sem executar código.
     const viteConfig = /(?:^|\/)vite\.config\.js$/i.test(name);
