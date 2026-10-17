@@ -77,7 +77,7 @@ app.use(
 
 
 const SYSTEM_PROMPT = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
-Conversa: responda de forma útil e concisa.
+Conversa: responda de forma útil, natural e concisa. Quando o usuário apenas apresentar uma ideia, personagem, projeto ou informação, reconheça o que foi dito e converse sobre o assunto. Não presuma que ele esteja pedindo código, arquitetura, planejamento ou criação de arquivos. Só proponha ou desenvolva soluções técnicas quando houver um pedido explícito ou uma pergunta que justifique isso.
 Código novo: use create_document. Para projetos complexos, aja como engenheira de software: planeje arquitetura, preserve a stack solicitada, gere configuração/dependências/entrypoints/componentes necessários e revise imports/exports/caminhos antes de entregar. Entregue TODOS os arquivos completos e conectados. Nunca reduza frameworks a HTML simples.
 Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar.
 Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos. Preserve a stack.
@@ -448,6 +448,10 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     }
 
     const history = trimHistory(conv.messages);
+    const groqHistory = history.map(m => ({
+      role: m.role === "model" ? "assistant" : "user",
+      content: m.parts?.[0]?.text || ""
+    }));
     const active = conv?.id ? await getActiveProject(req.user.id, conv.id) : null;
     const mentioned = message ? await findProjectMention(req.user.id, message) : null;
     const resolvedArtifactId = artifactId || mentioned?.id || active?.artifactId || null;
@@ -464,7 +468,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const route = routeRequest({message:textMessage,image,audio:null,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
 
     // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
-    if(route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage)){
+    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage)){
       const fp=cacheFingerprint(textMessage);
       let cached=await getCachedResponse(fp);
       if(!cached){
@@ -498,7 +502,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
       if(!reply && complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && (route.task==="chat_small" || route.task==="chat")){
         try{
-          const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,maxTokens:700});
+          const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,history:groqHistory,maxTokens:700});
           reply=extra.text; route.selectedProvider=extra.provider; route.selectedModel=extra.model;
           selectedProvider=extra.provider; selectedModel=extra.model;
         }catch(extraErr){
@@ -506,7 +510,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         }
       }
       if(!reply && !image && !audio && route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
-        reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,model:route.providers[0].model,maxTokens:900});
+        reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,history:groqHistory,model:route.providers[0].model,maxTokens:900});
         route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
         selectedProvider="openai"; selectedModel=route.providers[0].model;
       }
@@ -520,7 +524,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         try {
           const preferredModel=process.env.KIRA_ADVANCED_GROQ_MODEL || "openai/gpt-oss-20b";
           reply=await callGroqFallback({
-            systemInstruction:SYSTEM_PROMPT, message:textMessage, preferredModel,
+            systemInstruction:SYSTEM_PROMPT, message:textMessage, history:groqHistory, preferredModel,
             onSelectedModel:(model)=>{selectedModel=model;}
           });
           if(reply) {
@@ -714,7 +718,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             }
             reply = artifactSuccessReply(artifactFiles);
           } else {
-            reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage, onSelectedModel: (model) => { selectedModel=model; } });
+            reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage, history: groqHistory, onSelectedModel: (model) => { selectedModel=model; } });
           }
           usedFallback = true;
           selectedProvider="groq";
@@ -820,7 +824,7 @@ if (syntax.issues.length) {
       { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion }
     ]);
 
-    if(route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio){
+    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio){
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
     res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false });

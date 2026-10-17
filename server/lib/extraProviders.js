@@ -37,10 +37,19 @@ function config(name,account){
 export function extraProviderStatus(){
   return ["cloudflare","mistral","openrouter"].map(name=>({name,enabled:enabled(name),cooling:name==="cloudflare"?(cloudflareAccounts().length>0&&cloudflareAccounts().every(a=>cooling(cloudflareKey(a)))):cooling(name),retryAt:name==="cloudflare"?null:states.get(name)?.until||null}));
 }
-async function requestProvider(name,c,{systemInstruction,message,maxTokens},stateKey,accountIndex){
-  const body={model:c.model,messages:[{role:"system",content:systemInstruction},{role:"user",content:message}],temperature:0.35,max_tokens:maxTokens};
+async function requestProvider(name,c,{systemInstruction,message,history=[],maxTokens},stateKey,accountIndex){
+  const body={
+  model:c.model,
+  messages:[
+    {role:"system",content:systemInstruction},
+    ...history,
+    {role:"user",content:message}
+  ],
+  temperature:0.35,
+  max_tokens:maxTokens
+};
   if(name==="cloudflare")body.options={rejectIfBusy:true};
-  const key=`${stateKey}:${c.model}:${message}:${maxTokens}:${systemInstruction}`;
+  const key=JSON.stringify([stateKey,c.model,systemInstruction,history,message,maxTokens]);
   if(inflight.has(key))return inflight.get(key);
   const job=(async()=>{
     const started=Date.now();
@@ -59,9 +68,9 @@ async function requestProvider(name,c,{systemInstruction,message,maxTokens},stat
   })().finally(()=>inflight.delete(key));
   inflight.set(key,job);return job;
 }
-export async function callExtraProvider(name,{systemInstruction,message,maxTokens=900}){
+export async function callExtraProvider(name,{systemInstruction,message,history=[],maxTokens=900}){
   if(!enabled(name)){const e=new Error(`${name} indisponível.`);e.code="provider_unavailable";throw e;}
-  const args={systemInstruction,message,maxTokens};
+  const args={systemInstruction,message,history,maxTokens};
   if(name==="cloudflare"){
     const accounts=cloudflareAccounts();const errors=[];
     for(const account of accounts){

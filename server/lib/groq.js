@@ -84,10 +84,11 @@ async function tryModels(request, onSelectedModel, preferredModel, onlyPreferred
   throw lastError || new Error("Nenhum modelo/chave Groq disponível.");
 }
 
-export async function callGroqFallback({ systemInstruction, message, onSelectedModel, preferredModel }) {
+export async function callGroqFallback({ systemInstruction, message, history = [], onSelectedModel, preferredModel }) {
   const content = await tryModels({
     messages: [
       { role: "system", content: systemInstruction },
+      ...history,
       { role: "user", content: message }
     ],
     maxTokens: 4096
