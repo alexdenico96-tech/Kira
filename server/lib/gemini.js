@@ -105,7 +105,7 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
   const hasAudio = contents.some(c => c.parts?.some(p => p.inlineData?.mimeType?.startsWith("audio/")));
   const res = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
-    signal: AbortSignal.timeout(Math.max(3000, Number(process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : hasAudio ? 30000 : 18000)))),
+    signal: AbortSignal.timeout(Math.max(3000, Number(hasAudio ? (process.env.KIRA_GEMINI_AUDIO_TIMEOUT_MS || 60000) : (process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : 18000))))),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },

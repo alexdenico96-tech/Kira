@@ -615,8 +615,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
           error: "Não consegui gerar a imagem agora. Tente novamente."
         });
       }
-      // KIRA_MULTIMODAL_SAFE_V1: nunca substituir áudio/imagem por um fallback apenas textual.
-      if (image?.data || audio?.data) {
+      // Preservar a análise visual: não substituir imagens por um fallback apenas textual.
+// Áudios já transcritos podem utilizar o fallback textual.
+      if (image?.data) {
         console.warn(`[kira-multimodal] unavailable kind=${audio?.data ? 'audio' : 'image'} status=${err.status || 'error'}`);
         return res.status(502).json({ error: audio?.data
           ? 'Não consegui processar o áudio neste momento. O serviço de compreensão de áudio está indisponível; tente novamente.'
