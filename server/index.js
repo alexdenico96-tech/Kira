@@ -22,6 +22,7 @@ import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/
 import { inspectProjectFiles } from "./lib/qualityGate.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
+import helmet from "helmet";
 // KIRA_PACKAGE_JSON_REPAIR_V1_INTEGRATION
 import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
 import { repairArtifactNewlines } from "./lib/artifactNewlineRepair.js"; // KIRA_PHASE22_PASSIVE_SYNTAX_GATE
@@ -62,7 +63,32 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.use(cors());
+
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false
+}));
+
+const allowedOrigins = new Set(
+  (process.env.CORS_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(null, false);
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+  })
+);
 app.use(express.json({ limit: "20mb" }));
 
 // Imagens geradas e salvas localmente.
