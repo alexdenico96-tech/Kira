@@ -308,9 +308,14 @@ export async function generateKiraImage(prompt) {
   const style = detectImageStyle(cleanPrompt);
 
   const enhancedPrompt = [
-    "Create one image faithfully following this description:",
-    cleanPrompt,
-    "Visual style: " + style + ".",
+    "Generate a single image that accurately represents the user's request.",
+"USER REQUEST (highest priority for visual content):",
+cleanPrompt,
+"Follow every explicitly requested detail, including exact quantities, colors,",
+"character attributes, objects, actions, spatial relationships and background.",
+"Do not omit, replace, reinterpret or contradict requested visual elements.",
+"Treat the user's requested style and composition as authoritative.",
+"Default visual style (only when the user did not specify one): " + style + ".",
     "Composition: " + layout.name + ".",
     "PRIORITY: The main subject must be immediately recognizable.",
     "Preserve the exact identity, species, colors, clothing,",

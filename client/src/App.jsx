@@ -1,12 +1,16 @@
+
 import { useEffect, useRef, useState } from "react";
 import "./styles/KiraMidnight.css";
+
 import InputBar from "./components/InputBar.jsx";
 import MessageThread from "./components/MessageThread.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SettingsModal from "./components/SettingsModal.jsx";
 import ArtifactWorkspace from "./components/ArtifactWorkspace.jsx";
+
 import { useTheme } from "./lib/useTheme.js";
+
 import {
   getStoredSession,
   clearSession,
@@ -23,17 +27,44 @@ const SUGGESTIONS = [
   "Cria um documento com o plano técnico de um app de finanças pessoais"
 ];
 
+// Espelha a detecção de pedidos explícitos de imagem do backend.
+// A decisão definitiva de gerar a imagem continua sendo do servidor.
+function isImageGenerationRequest(value) {
+  const text = String(value || "").trim();
+
+  if (!text) return false;
+
+  // Não confundir pedidos de interfaces e código com geração de imagens.
+  if (
+    /\b(html|css|javascript|jsx|tsx|site|website|landing page|c[oó]digo|componente|aplicativo|app|p[aá]gina web)\b/i.test(
+      text
+    )
+  ) {
+    return false;
+  }
+
+  return /(?:\b(?:crie|cria|criar|gere|gera|gerar|desenhe|desenha|desenhar|produza|fa[cç]a|quero)\b.{0,90}\b(?:imagem|foto|fotografia|ilustra[cç][aã]o|retrato|arte visual)\b|\b(?:imagem|foto|fotografia|ilustra[cç][aã]o|retrato)\b.{0,50}\b(?:de|do|da|com|mostrando)\b|\b(?:generate|create|draw|make)\b.{0,90}\b(?:image|picture|photo|portrait|illustration)\b)/i.test(
+    text
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useTheme();
+
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [session, setSession] = useState(() => getStoredSession());
+
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
+
   const [loading, setLoading] = useState(false);
   const submittingRef = useRef(false);
+
   const [loadingLabel, setLoadingLabel] = useState("pensando…");
+  const [generatingImage, setGeneratingImage] = useState(false);
+
   const [error, setError] = useState(null);
   const [activeArtifact, setActiveArtifact] = useState(null);
 
@@ -41,6 +72,7 @@ export default function App() {
 
   useEffect(() => {
     if (session) refreshConversations();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.token]);
 
@@ -49,22 +81,33 @@ export default function App() {
       const list = await listConversations(session.token);
       setConversations(list);
     } catch (e) {
-      if (e.message?.includes("Sessão")) handleLogout();
+      if (e.message?.includes("Sessão")) {
+        handleLogout();
+      }
     }
   }
 
   async function handleSelectConversation(id) {
     try {
       const conv = await getConversation(session.token, id);
+
       setActiveId(conv.id);
       setMessages(conv.messages);
-      const latest = [...(conv.messages || [])].reverse().find((m) => m.artifactFiles?.length);
-      setActiveArtifact(latest ? {
-        id: latest.artifactId || null,
-        version: latest.artifactVersion || 1,
-        name: latest.artifactName || "Artifact",
-        files: latest.artifactFiles
-      } : null);
+
+      const latest = [...(conv.messages || [])]
+        .reverse()
+        .find((m) => m.artifactFiles?.length);
+
+      setActiveArtifact(
+        latest
+          ? {
+              id: latest.artifactId || null,
+              version: latest.artifactVersion || 1,
+              name: latest.artifactName || "Artifact",
+              files: latest.artifactFiles
+            }
+          : null
+      );
     } catch (e) {
       setError(e.message);
     }
@@ -81,8 +124,14 @@ export default function App() {
   async function handleDeleteConversation(id) {
     try {
       await deleteConversation(session.token, id);
-      setConversations((list) => list.filter((c) => c.id !== id));
-      if (id === activeId) handleNewConversation();
+
+      setConversations((list) =>
+        list.filter((c) => c.id !== id)
+      );
+
+      if (id === activeId) {
+        handleNewConversation();
+      }
     } catch (e) {
       setError(e.message);
     }
@@ -91,6 +140,7 @@ export default function App() {
   async function handleClearAllHistory() {
     try {
       await deleteAllConversations(session.token);
+
       setConversations([]);
       handleNewConversation();
     } catch (e) {
@@ -100,38 +150,83 @@ export default function App() {
 
   function handleLogout() {
     clearSession();
+
     setSession(null);
     setConversations([]);
     setActiveId(null);
     setMessages([]);
+
+    setLoading(false);
+    setGeneratingImage(false);
   }
 
   async function handleSubmit(text, attachments = {}) {
     const value = (text ?? input).trim();
     const { image, audio } = attachments;
-    if (!value && !image && !audio) return;
+
+    if (!value && !image && !audio) return false;
     if (submittingRef.current) return false;
+
     submittingRef.current = true;
 
     const userMessage = {
       role: "user",
-      content: value || (image ? "Descreva essa imagem." : "Ouça esse áudio e responda.")
+      content:
+        value ||
+        (image
+          ? "Descreva essa imagem."
+          : "Ouça esse áudio e responda.")
     };
-    if (image) userMessage.previewImage = `data:${image.mimeType};base64,${image.data}`;
+
+    if (image) {
+      userMessage.previewImage =
+        `data:${image.mimeType};base64,${image.data}`;
+    }
+
     if (audio) {
       userMessage.hadAudio = true;
       userMessage.audioPreviewUrl = attachments.audioPreviewUrl;
     }
 
+    // Só ativa a animação para pedidos explícitos de imagem.
+    // Uma foto enviada para análise não ativa esse efeito.
+    const shouldAnimateImage =
+      !image &&
+      !audio &&
+      !activeArtifact?.id &&
+      isImageGenerationRequest(value);
+
     setMessages((m) => [...m, userMessage]);
     setInput("");
-    setLoading(true);
     setError(null);
-    setLoadingLabel(image ? "olhando a imagem…" : audio ? "ouvindo o áudio…" : "pensando…");
+
+    setGeneratingImage(shouldAnimateImage);
+    setLoadingLabel(
+      shouldAnimateImage
+        ? "criando sua imagem…"
+        : image
+          ? "olhando a imagem…"
+          : audio
+            ? "ouvindo o áudio…"
+            : "pensando…"
+    );
+
+    setLoading(true);
 
     try {
-      const res = await sendMessage(session.token, value, activeId, { image, audio, artifactId: activeArtifact?.id || null });
+      const res = await sendMessage(
+        session.token,
+        value,
+        activeId,
+        {
+          image,
+          audio,
+          artifactId: activeArtifact?.id || null
+        }
+      );
+
       setActiveId(res.conversationId);
+
       setMessages((m) => [
         ...m,
         {
@@ -147,21 +242,49 @@ export default function App() {
           artifactVersion: res.artifactVersion
         }
       ]);
-      if (res.artifactFiles?.length) setActiveArtifact({ id: res.artifactId || null, version: res.artifactVersion || 1, name: res.artifactName || "Artifact", files: res.artifactFiles });
+
+      if (res.artifactFiles?.length) {
+        setActiveArtifact({
+          id: res.artifactId || null,
+          version: res.artifactVersion || 1,
+          name: res.artifactName || "Artifact",
+          files: res.artifactFiles
+        });
+      }
+
       refreshConversations();
+
       return true;
     } catch (e) {
       setError(e.message);
-      setMessages((m) => [...m, { role: "assistant", content: e.message, isError: true }]);
+
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: e.message,
+          isError: true
+        }
+      ]);
+
       return false;
     } finally {
       submittingRef.current = false;
+
       setLoading(false);
+      setGeneratingImage(false);
+      setLoadingLabel("pensando…");
     }
   }
 
   if (!session) {
-    return <LoginScreen onAuthenticated={(token, user) => setSession({ token, user })} />;
+    return (
+      <LoginScreen
+        onAuthenticated={(token, user) =>
+          setSession({ token, user })
+        }
+      />
+    );
   }
 
   return (
@@ -178,40 +301,82 @@ export default function App() {
         username={session.user.username}
       />
 
-      <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} theme={theme} setTheme={setTheme} token={session.token} />
+      <SettingsModal
+        open={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        theme={theme}
+        setTheme={setTheme}
+        token={session.token}
+      />
 
       <div className="flex-1 flex min-w-0">
         <div className="flex-1 flex flex-col min-w-0">
-        {!started ? (
-          <main className="flex-1 flex flex-col items-center justify-center px-4 gap-8 -mt-16">
-            <h1 className="float-slow font-display font-semibold text-3xl md:text-4xl text-paper text-center tracking-tight">
-              Pronto quando você quiser
-            </h1>
-            <InputBar value={input} onChange={setInput} onSubmit={handleSubmit} loading={loading} autoFocus />
-            <div className="flex flex-wrap justify-center gap-2 max-w-2xl">
-              {SUGGESTIONS.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleSubmit(s)}
-                  className="text-xs font-body text-mist border border-line rounded-full px-3.5 py-2 hover:border-neon/50 hover:text-paper transition-colors"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </main>
-        ) : (
-          <>
-            <main className="flex-1 overflow-y-auto px-4">
-              <MessageThread messages={messages} loading={loading} loadingLabel={loadingLabel} onOpenArtifact={setActiveArtifact} />
+          {!started ? (
+            <main className="flex-1 flex flex-col items-center justify-center px-4 gap-8 -mt-16">
+              <h1 className="float-slow font-display font-semibold text-3xl md:text-4xl text-paper text-center tracking-tight">
+                Pronto quando você quiser
+              </h1>
+
+              <InputBar
+                value={input}
+                onChange={setInput}
+                onSubmit={handleSubmit}
+                loading={loading}
+                autoFocus
+              />
+
+              <div className="flex flex-wrap justify-center gap-2 max-w-2xl">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => handleSubmit(s)}
+                    className="text-xs font-body text-mist border border-line rounded-full px-3.5 py-2 hover:border-neon/50 hover:text-paper transition-colors"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             </main>
-            <footer className="px-4 pb-6 pt-2" style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
-              <InputBar value={input} onChange={setInput} onSubmit={handleSubmit} loading={loading} />
-            </footer>
-          </>
-        )}
+          ) : (
+            <>
+              <main className="flex-1 overflow-y-auto px-4">
+                <MessageThread
+                  messages={messages}
+                  loading={loading}
+                  loadingLabel={loadingLabel}
+                  generatingImage={generatingImage}
+                  onOpenArtifact={setActiveArtifact}
+                />
+              </main>
+
+              <footer
+                className="px-4 pb-6 pt-2"
+                style={{
+                  paddingBottom:
+                    "max(1.5rem, env(safe-area-inset-bottom))"
+                }}
+              >
+                <InputBar
+                  value={input}
+                  onChange={setInput}
+                  onSubmit={handleSubmit}
+                  loading={loading}
+                />
+              </footer>
+            </>
+          )}
         </div>
-        {activeArtifact && <ArtifactWorkspace artifact={activeArtifact} token={session.token} onArtifactChange={setActiveArtifact} onRequestFix={handleSubmit} onClose={() => setActiveArtifact(null)} />}
+
+        {activeArtifact && (
+          <ArtifactWorkspace
+            artifact={activeArtifact}
+            token={session.token}
+            onArtifactChange={setActiveArtifact}
+            onRequestFix={handleSubmit}
+            onClose={() => setActiveArtifact(null)}
+          />
+        )}
       </div>
     </div>
   );

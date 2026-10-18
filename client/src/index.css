@@ -167,3 +167,49 @@ textarea:focus-visible {
 @media (max-width: 900px) {
   .artifact-workspace { position: fixed; inset: 0; z-index: 60; width: 100%; }
 }
+
+/* Kira — animação de geração de imagens */
+
+@keyframes kiraParticle {
+  0% {
+    transform: translate(0, 0) scale(0.3);
+    opacity: 0;
+  }
+
+  30% {
+    opacity: 0.9;
+  }
+
+  60% {
+    transform:
+      translate(var(--particle-x), var(--particle-y))
+      scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(0, 0) scale(0.2);
+    opacity: 0;
+  }
+}
+
+@keyframes kiraProgress {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  50% {
+    transform: translateX(110%);
+  }
+
+  100% {
+    transform: translateX(310%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-\[kiraParticle_3s_ease-in-out_infinite\],
+  .animate-\[kiraProgress_2s_ease-in-out_infinite\] {
+    animation: none;
+  }
+}
