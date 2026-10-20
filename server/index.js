@@ -23,6 +23,7 @@ import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/
 import { inspectProjectFiles } from "./lib/qualityGate.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
+import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
 import helmet from "helmet";
 // KIRA_PACKAGE_JSON_REPAIR_V1_INTEGRATION
 import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
@@ -463,7 +464,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
     if (audio?.data) {
       try {
-        const transcript = await transcribeKiraAudio(audio);
+        const transcript = await transcribeAudio(audio);
         textMessage = [message, transcript].filter(Boolean).join("\n");
         console.info(`[kira-audio] transcribed chars=${transcript.length}`);
       } catch (audioError) {
