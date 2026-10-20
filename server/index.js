@@ -533,7 +533,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         reply = 'Aqui está a imagem solicitada.';
         console.info('[kira-image] direct_generation=1');
       }
-      if(!reply && complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && (route.task==="chat_small" || route.task==="chat")){
+      if(!reply && complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && (route.task==="chat_small" || route.task==="chat")){
         try{
           const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,history:groqHistory,maxTokens:700});
           reply=extra.text; route.selectedProvider=extra.provider; route.selectedModel=extra.model;

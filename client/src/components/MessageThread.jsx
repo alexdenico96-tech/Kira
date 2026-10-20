@@ -298,13 +298,13 @@ export default function MessageThread({
       ) : (
         <div className="pt-2">
           <KiraVoiceWave
-            active
-            label={
-              loadingLabel
-                ? loadingLabel.toUpperCase()
-                : "KIRA ESTÁ PROCESSANDO"
-            }
-          />
+  mode="processing"
+  label={
+    loadingLabel
+      ? loadingLabel.toUpperCase()
+      : "KIRA ESTÁ PROCESSANDO"
+  }
+/>
         </div>
       )}
     </div>
