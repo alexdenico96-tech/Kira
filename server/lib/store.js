@@ -66,6 +66,9 @@ export async function initStore() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_name TEXT;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_files JSONB;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS auth_attempt_limits (key_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL, reset_at TIMESTAMPTZ NOT NULL);`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_auth_attempt_limits_reset ON auth_attempt_limits(reset_at);`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_hash TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires_at TIMESTAMPTZ;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS terms_version TEXT;`);
@@ -145,7 +148,33 @@ export async function initStore() {
 
 // ---------- Users ----------
 
-const USER_FIELDS = `id, username, email, password_hash AS "passwordHash"`;
+const USER_FIELDS = `id, username, email, password_hash AS "passwordHash", auth_version AS "authVersion"`;
+
+export async function getAuthVersion(userId) {
+  const { rows } = await pool.query('SELECT auth_version AS "authVersion" FROM users WHERE id = $1', [userId]);
+  return rows[0]?.authVersion ?? null;
+}
+
+export async function consumeAuthLimit(keyHash, maxAttempts, windowSeconds) {
+  const { rows } = await pool.query(`
+    INSERT INTO auth_attempt_limits (key_hash, attempts, reset_at)
+    VALUES ($1, 1, now() + ($3 * interval '1 second'))
+    ON CONFLICT (key_hash) DO UPDATE SET
+      attempts = CASE WHEN auth_attempt_limits.reset_at <= now() THEN 1 ELSE auth_attempt_limits.attempts + 1 END,
+      reset_at = CASE WHEN auth_attempt_limits.reset_at <= now() THEN now() + ($3 * interval '1 second') ELSE auth_attempt_limits.reset_at END
+    RETURNING attempts, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (reset_at - now()))))::integer AS "retryAfter"
+  `, [keyHash, maxAttempts, windowSeconds]);
+  return { allowed: rows[0].attempts <= maxAttempts, retryAfter: rows[0].retryAfter };
+}
+
+export async function cleanupExpiredAuthLimits() {
+  const result = await pool.query(`
+    DELETE FROM auth_attempt_limits
+    WHERE reset_at < now() - interval '1 day'
+  `);
+
+  return result.rowCount;
+}
 
 export async function findUserByUsername(username) {
   const { rows } = await pool.query(`SELECT ${USER_FIELDS} FROM users WHERE lower(username) = lower($1)`, [username]);
@@ -160,7 +189,7 @@ export async function createUser({ username, email, passwordHash, legal }) {
     const { rows } = await client.query(
       `INSERT INTO users (id, username, email, password_hash, terms_version, disclaimer_version, legal_accepted_at)
        VALUES ($1, $2, $3, $4, $5, $6, now())
-       RETURNING id, username, email, created_at AS "createdAt"`,
+       RETURNING id, username, email, auth_version AS "authVersion", created_at AS "createdAt"`,
       [id, username, email, passwordHash, legal.termsVersion, legal.disclaimerVersion]
     );
     await client.query(
@@ -207,8 +236,19 @@ export async function clearPasswordResetToken(userId) {
   await pool.query(`UPDATE users SET reset_token_hash = NULL, reset_token_expires_at = NULL WHERE id = $1`, [userId]);
 }
 
+export async function resetPasswordWithToken(token, passwordHash) {
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  const { rows } = await pool.query(`
+    UPDATE users SET password_hash = $2, auth_version = auth_version + 1,
+      reset_token_hash = NULL, reset_token_expires_at = NULL
+    WHERE reset_token_hash = $1 AND reset_token_expires_at > now()
+    RETURNING id
+  `, [tokenHash, passwordHash]);
+  return rows.length > 0;
+}
+
 export async function updatePassword(userId, passwordHash) {
-  await pool.query(`UPDATE users SET password_hash = $2 WHERE id = $1`, [userId, passwordHash]);
+  await pool.query(`UPDATE users SET password_hash = $2, auth_version = auth_version + 1 WHERE id = $1`, [userId, passwordHash]);
 }
 
 // ---------- Conversations ----------

@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { signToken, requireAuth } from "./lib/auth.js";
+import { authLimit } from "./lib/authLimits.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
 import { callGemini, transcribeKiraAudio, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
@@ -28,6 +29,7 @@ import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
 import { repairArtifactNewlines } from "./lib/artifactNewlineRepair.js"; // KIRA_PHASE22_PASSIVE_SYNTAX_GATE
 import {
   initStore,
+  cleanupExpiredAuthLimits,
   findUserByUsername,
   findUserByEmail,
   createUser,
@@ -35,6 +37,7 @@ import {
   findUserByValidResetToken,
   clearPasswordResetToken,
   updatePassword,
+  resetPasswordWithToken,
   listConversations,
   getConversation,
   createConversation,
@@ -63,6 +66,8 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+// Render encaminha requisições por um proxy reverso.
+app.set("trust proxy", 1);
 
 app.use(helmet({
   contentSecurityPolicy: false,
@@ -124,11 +129,11 @@ function publicUser(user) {
 
 // ---------- Auth ----------
 
-app.post("/api/auth/register", async (req, res) => {
+app.post("/api/auth/register", authLimit("register", 8, 3600), async (req, res) => {
   try {
     const { username, email, password, termsAccepted, disclaimerAccepted, termsVersion, disclaimerVersion } = req.body;
-    if (!username || !email || !password || password.length < 6) {
-      return res.status(400).json({ error: "Usuário, e-mail e senha com no mínimo 6 caracteres são obrigatórios." });
+    if (typeof username !== "string" || username.trim().length < 3 || username.trim().length > 50 || typeof email !== "string" || email.length > 254 || typeof password !== "string" || password.length < 12 || Buffer.byteLength(password, "utf8") > 72) {
+      return res.status(400).json({ error: "Informe usuário de 3 a 50 caracteres, e-mail válido e senha de 12 caracteres ou mais (até 72 bytes)." });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return res.status(400).json({ error: "Informe um e-mail válido." });
@@ -171,9 +176,10 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 
-app.post("/api/auth/login", async (req, res) => {
+app.post("/api/auth/login", authLimit("login", 12, 900), async (req, res) => {
   try {
     const { username, password } = req.body;
+    if (typeof username !== "string" || username.length > 100 || typeof password !== "string" || Buffer.byteLength(password, "utf8") > 1024) return res.status(400).json({ error: "Dados de login inválidos." });
     const user = await findUserByUsername(username || "");
     if (!user) return res.status(401).json({ error: "Usuário ou senha inválidos." });
     const ok = await bcrypt.compare(password || "", user.passwordHash);
@@ -189,9 +195,10 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/me", requireAuth, (req, res) => res.json({ user: req.user }));
 
 // Recuperação de senha por link enviado ao e-mail cadastrado.
-app.post("/api/auth/forgot-password", async (req, res) => {
+app.post("/api/auth/forgot-password", authLimit("forgot", 5, 3600), async (req, res) => {
   try {
-    const email = (req.body.email || "").trim().toLowerCase();
+    const email = typeof req.body?.email === "string" ? req.body.email.trim().toLowerCase() : "";
+    if (email.length > 254) return res.status(400).json({ error: "E-mail inválido." });
     const user = email ? await findUserByEmail(email) : null;
 
     // Resposta genérica para não revelar se um e-mail está cadastrado.
@@ -212,11 +219,11 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   }
 });
 
-app.post("/api/auth/reset-password", async (req, res) => {
+app.post("/api/auth/reset-password", authLimit("reset", 10, 3600), async (req, res) => {
   try {
     const { token, newPassword } = req.body;
-    if (!token || !newPassword || newPassword.length < 6) {
-      return res.status(400).json({ error: "Link inválido ou nova senha com menos de 6 caracteres." });
+    if (typeof token !== "string" || !/^[a-f0-9]{64}$/.test(token) || typeof newPassword !== "string" || newPassword.length < 12 || Buffer.byteLength(newPassword, "utf8") > 72) {
+      return res.status(400).json({ error: "Link inválido ou senha fora do limite de 12 caracteres a 72 bytes." });
     }
 
     const user = await findUserByValidResetToken(token);
@@ -225,8 +232,8 @@ app.post("/api/auth/reset-password", async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(newPassword, 10);
-    await updatePassword(user.id, passwordHash);
-    await clearPasswordResetToken(user.id);
+    const updated = await resetPasswordWithToken(token, passwordHash);
+    if (!updated) return res.status(400).json({ error: "Este link é inválido ou expirou. Solicite um novo link." });
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -871,9 +878,34 @@ if (process.env.NODE_ENV === "production") {
 }
 
 const PORT = process.env.PORT || 3001;
+
 initStore()
   .then(() => {
-    app.listen(PORT, () => console.log(`Servidor rodando em http://localhost:${PORT}`));
+    app.listen(PORT, () => {
+      console.log(`Servidor rodando em http://localhost:${PORT}`);
+    });
+
+    // Limpeza inicial e periódica dos limites de autenticação.
+    async function cleanupAuthLimits() {
+      try {
+        const removed = await cleanupExpiredAuthLimits();
+
+        if (removed > 0) {
+          console.log(`[AUTH] ${removed} registros expirados removidos.`);
+        }
+      } catch (err) {
+        console.error("[AUTH] Falha na limpeza dos limites:", err);
+      }
+    }
+
+    void cleanupAuthLimits();
+
+    const cleanupTimer = setInterval(
+      cleanupAuthLimits,
+      24 * 60 * 60 * 1000
+    );
+
+    cleanupTimer.unref();
   })
   .catch((err) => {
     console.error("Falha ao inicializar o armazenamento de dados:", err);

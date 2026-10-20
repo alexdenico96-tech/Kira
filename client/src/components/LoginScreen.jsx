@@ -80,8 +80,8 @@ export default function LoginScreen({ onAuthenticated }) {
               <form onSubmit={submit} className="space-y-3">
                 {(mode==="login" || mode==="register") && <input className={inputClass} value={username} onChange={e=>setUsername(e.target.value)} placeholder="Usuário" autoComplete="username" required />}
                 {(mode==="register" || mode==="forgot") && <input className={inputClass} type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="E-mail" autoComplete="email" required />}
-                {(mode==="login" || mode==="register") && <input className={inputClass} type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Senha" autoComplete={mode==="register"?"new-password":"current-password"} minLength={6} required />}
-                {mode==="reset" && <input className={inputClass} type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Nova senha" minLength={6} required />}
+                {(mode==="login" || mode==="register") && <input className={inputClass} type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="Senha" autoComplete={mode==="register"?"new-password":"current-password"} minLength={mode==="register"?12:6} required />}
+                {mode==="reset" && <input className={inputClass} type="password" value={newPassword} onChange={e=>setNewPassword(e.target.value)} placeholder="Nova senha" minLength={12} required />}
 
                 {mode==="register" && (
                   <div className="rounded-2xl border border-line bg-panel2/50 p-4 space-y-3">
