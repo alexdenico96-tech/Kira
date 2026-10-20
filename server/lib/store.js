@@ -158,13 +158,30 @@ export async function getAuthVersion(userId) {
 export async function consumeAuthLimit(keyHash, maxAttempts, windowSeconds) {
   const { rows } = await pool.query(`
     INSERT INTO auth_attempt_limits (key_hash, attempts, reset_at)
-    VALUES ($1, 1, now() + ($3 * interval '1 second'))
+    VALUES ($1, 1, now() + ($2::integer * interval '1 second'))
     ON CONFLICT (key_hash) DO UPDATE SET
-      attempts = CASE WHEN auth_attempt_limits.reset_at <= now() THEN 1 ELSE auth_attempt_limits.attempts + 1 END,
-      reset_at = CASE WHEN auth_attempt_limits.reset_at <= now() THEN now() + ($3 * interval '1 second') ELSE auth_attempt_limits.reset_at END
-    RETURNING attempts, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (reset_at - now()))))::integer AS "retryAfter"
-  `, [keyHash, maxAttempts, windowSeconds]);
-  return { allowed: rows[0].attempts <= maxAttempts, retryAfter: rows[0].retryAfter };
+      attempts = CASE
+        WHEN auth_attempt_limits.reset_at <= now()
+        THEN 1
+        ELSE auth_attempt_limits.attempts + 1
+      END,
+      reset_at = CASE
+        WHEN auth_attempt_limits.reset_at <= now()
+        THEN now() + ($2::integer * interval '1 second')
+        ELSE auth_attempt_limits.reset_at
+      END
+    RETURNING
+      attempts,
+      GREATEST(
+        1,
+        CEIL(EXTRACT(EPOCH FROM (reset_at - now())))
+      )::integer AS "retryAfter"
+  `, [keyHash, windowSeconds]);
+
+  return {
+    allowed: rows[0].attempts <= maxAttempts,
+    retryAfter: rows[0].retryAfter
+  };
 }
 
 export async function cleanupExpiredAuthLimits() {
