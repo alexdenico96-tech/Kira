@@ -1,4 +1,5 @@
-
+import KiraAudioMessage from "./KiraAudioMessage.jsx";
+import KiraVoiceWave from "./KiraVoiceWave.jsx";
 import { useEffect, useRef, useState } from "react";
 import { FileDown, PanelsTopLeft } from "lucide-react";
 import Markdown from "./Markdown.jsx";
@@ -214,12 +215,8 @@ export default function MessageThread({
               )}
 
               {m.hadAudio && (
-                <audio
-                  src={m.audioPreviewUrl}
-                  controls
-                  className="h-9 max-w-[220px]"
-                />
-              )}
+  <KiraAudioMessage src={m.audioPreviewUrl} />
+)}
 
               {m.content && (
                 <div className="rounded-2xl bg-panel2 border border-line px-4 py-2.5 text-[15px] text-paper font-body whitespace-pre-wrap leading-relaxed">
@@ -290,29 +287,30 @@ export default function MessageThread({
         )
       )}
 
-      {loading && (
-        <div className="flex gap-3">
-          <Avatar />
 
-          <div className="min-w-0 flex-1">
-            {generatingImage ? (
-              <ImageGenerationAnimation />
-            ) : (
-              <div className="flex items-center gap-2 pt-2">
-                <span className="flex gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-neon animate-bounce [animation-delay:-0.3s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-neon animate-bounce [animation-delay:-0.15s]" />
-                  <span className="w-1.5 h-1.5 rounded-full bg-neon animate-bounce" />
-                </span>
+{loading && (
+  <div className="flex gap-3">
+    <Avatar />
 
-                <span className="text-xs font-mono text-mist">
-                  {loadingLabel || "pensando…"}
-                </span>
-              </div>
-            )}
-          </div>
+    <div className="min-w-0 flex-1">
+      {generatingImage ? (
+        <ImageGenerationAnimation />
+      ) : (
+        <div className="pt-2">
+          <KiraVoiceWave
+            active
+            label={
+              loadingLabel
+                ? loadingLabel.toUpperCase()
+                : "KIRA ESTÁ PROCESSANDO"
+            }
+          />
         </div>
       )}
+    </div>
+  </div>
+)}
+
 
       <div ref={endRef} />
     </div>
