@@ -28,6 +28,7 @@ import helmet from "helmet";
 // KIRA_PACKAGE_JSON_REPAIR_V1_INTEGRATION
 import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
 import { repairArtifactNewlines } from "./lib/artifactNewlineRepair.js"; // KIRA_PHASE22_PASSIVE_SYNTAX_GATE
+import { repairGeneratedHtml } from "./lib/htmlArtifactRepair.js"; // KIRA_HTML_ARTIFACT_REPAIR_V1
 import {
   initStore,
   cleanupExpiredAuthLimits,
@@ -111,7 +112,7 @@ app.use(
 const SYSTEM_PROMPT = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
 Conversa: responda de forma útil, natural e concisa. Quando o usuário apenas apresentar uma ideia, personagem, projeto ou informação, reconheça o que foi dito e converse sobre o assunto. Não presuma que ele esteja pedindo código, arquitetura, planejamento ou criação de arquivos. Só proponha ou desenvolva soluções técnicas quando houver um pedido explícito ou uma pergunta que justifique isso.
 Código novo: use create_document. Para projetos complexos, aja como engenheira de software: planeje arquitetura, preserve a stack solicitada, gere configuração/dependências/entrypoints/componentes necessários e revise imports/exports/caminhos antes de entregar. Entregue TODOS os arquivos completos e conectados. Nunca reduza frameworks a HTML simples.
-Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar.
+Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar. IMPORTANTE: em arquivos .html, escreva marcação HTML literal e válida: atributos devem usar aspas normais, por exemplo lang="pt-BR" e charset="UTF-8". Nunca coloque barra invertida antes das aspas de atributos HTML. Barras invertidas de escape pertencem à serialização JSON, não ao conteúdo final do arquivo.
 Projeto existente: use update_artifact; retorne só operações create/update/delete necessárias, nunca arquivos intactos. Preserve a stack.
 Não anuncie genericamente "criei uma landing page". O servidor apresentará a lista exata dos arquivos criados.
 Imagens: use generate_image quando pedirem geração. Para fotografias realistas, descreva sujeito, contexto, iluminação fisicamente plausível, materiais, profundidade e composição com fidelidade ao pedido; evite adicionar objetos não solicitados. Para outros estilos, respeite a estética pedida. Home Assistant: só use control_device quando pedido.
@@ -590,7 +591,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         const changes=Array.isArray(args.changes)?args.changes:[];
         const applied=applyFileOperations(existingArtifact.files,changes);
         if(!applied.manifest.created.length&&!applied.manifest.updated.length&&!applied.manifest.deleted.length) throw new Error("Nenhuma alteração válida retornada.");
-        const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,applied.files,args.summary||textMessage.slice(0,160),applied.manifest);
+        const normalized=repairGeneratedHtml(applied.files);
+        const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,normalized.files,args.summary||textMessage.slice(0,160),applied.manifest);
         artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
         reply=`Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
       } else if (functionCall?.name === "create_document") {
@@ -666,7 +668,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
           if (editingArtifact) {
             const patch = await callGroqArtifactUpdateFallback({ systemInstruction: SYSTEM_PROMPT, message: artifactEditPrompt(existingArtifact, textMessage) });
             const applied=applyFileOperations(existingArtifact.files,patch.changes);
-            const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,applied.files,patch.summary,applied.manifest);
+            const normalized=repairGeneratedHtml(applied.files);
+            const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,normalized.files,patch.summary,applied.manifest);
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
@@ -772,6 +775,15 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     }
 
     if (reply && selectedProvider) console.info(`[kira-provider] selected=${selectedProvider} model=${selectedModel || "not-reported"} intent=${intentKind} complexity=${complexity}`);
+    // KIRA_HTML_ARTIFACT_REPAIR_V1_INTEGRATION
+    if (artifactFiles?.length) {
+      const repairedHtml = repairGeneratedHtml(artifactFiles);
+      artifactFiles = repairedHtml.files;
+      if (repairedHtml.repairedFiles) {
+        console.info(`[kira-html-repair] repaired_files=${repairedHtml.repairedFiles} escapes=${repairedHtml.repairedEscapes}`);
+        reply = artifactSuccessReply(artifactFiles);
+      }
+    }
     // KIRA_ARTIFACT_NEWLINE_REPAIR_V1_INTEGRATION
     if (artifactFiles?.length) {
       const repairedNewlines = repairArtifactNewlines(artifactFiles, inspectProjectSyntax);

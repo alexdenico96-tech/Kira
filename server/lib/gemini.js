@@ -28,7 +28,7 @@ const IMAGE_TOOL = {
 const DOCUMENT_TOOL = {
   name: "create_document",
   description:
-    "Cria um artifact completo de projeto. Para apps/frameworks, gere a arquitetura real: package.json, configuração, entrypoints, src/, componentes, páginas, estilos e demais arquivos necessários. Todos os imports/exports/caminhos/dependências devem ser coerentes. Nunca reduza React/Vite/Next/TypeScript a HTML simples. Nunca entregue stubs/TODOs no lugar de funcionalidades solicitadas. Devolva TODOS os arquivos no mesmo artifact.",
+    "Cria um artifact completo de projeto. Para apps/frameworks, gere a arquitetura real: package.json, configuração, entrypoints, src/, componentes, páginas, estilos e demais arquivos necessários. Todos os imports/exports/caminhos/dependências devem ser coerentes. Nunca reduza React/Vite/Next/TypeScript a HTML simples. Nunca entregue stubs/TODOs no lugar de funcionalidades solicitadas. Devolva TODOS os arquivos no mesmo artifact. Para arquivos .html, gere HTML literal: use aspas normais nos atributos (lang=\"pt-BR\"), sem barras invertidas antes das aspas. O escape necessário para transportar JSON não deve aparecer no conteúdo final do arquivo.",
   parameters: {
     type: "OBJECT",
     properties: {
@@ -54,7 +54,7 @@ const DOCUMENT_TOOL = {
 
 const UPDATE_ARTIFACT_TOOL = {
   name: "update_artifact",
-  description: "Edita projeto existente usando operações mínimas. Nunca repita arquivos intactos.",
+  description: "Edita projeto existente usando operações mínimas. Nunca repita arquivos intactos. Ao editar arquivos .html, use aspas normais em atributos HTML; não deixe barras invertidas antes das aspas no conteúdo final.",
   parameters: {
     type: "OBJECT",
     properties: {

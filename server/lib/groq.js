@@ -97,7 +97,7 @@ export async function callGroqFallback({ systemInstruction, message, history = [
 }
 
 export async function callGroqArtifactFallback({ systemInstruction, message, preferredModel, onSelectedModel }) {
-  const artifactInstruction = `${systemInstruction}\n\nVocê está no modo de criação de Artifact. Responda SOMENTE com um objeto JSON válido, sem markdown e sem texto antes/depois, no formato: {"projectName":"nome-do-projeto","files":[{"path":"index.html","content":"conteúdo completo","language":"html"}]}. Inclua TODOS os arquivos necessários pedidos pelo usuário. Cada arquivo deve ter path e content completos. Não diga que criou arquivos se files estiver vazio.
+  const artifactInstruction = `${systemInstruction}\n\nVocê está no modo de criação de Artifact. Responda SOMENTE com um objeto JSON válido, sem markdown e sem texto antes/depois, no formato: {"projectName":"nome-do-projeto","files":[{"path":"index.html","content":"conteúdo completo","language":"html"}]}. Inclua TODOS os arquivos necessários pedidos pelo usuário. Cada arquivo deve ter path e content completos. Não diga que criou arquivos se files estiver vazio. Em arquivos .html, escreva marcação HTML literal e use aspas normais nos atributos (ex.: lang="pt-BR"); nunca inclua barras invertidas antes das aspas no conteúdo HTML. Escapes de JSON são apenas da serialização e não devem permanecer no arquivo.
 Para qualquer site HTML/CSS/JavaScript puro (NÃO APIs Node/Express ou backends), gere no mínimo index.html, style.css e script.js separados. index.html DEVE conter <link rel="stylesheet" href="style.css"> e <script src="script.js" defer></script>. Entregue implementação completa, coerente e apresentável, nunca uma página mínima ou placeholder.`;
 
   const raw = await tryModels({
@@ -171,7 +171,7 @@ export async function callGroqArtifactUpdateFallback({ systemInstruction, messag
 
 Você está editando um Artifact existente. Responda SOMENTE JSON válido:
 {"changes":[{"action":"create|update|delete","path":"arquivo.ext","content":"conteúdo completo quando create/update","language":"..."}],"summary":"resumo curto"}.
-Retorne SOMENTE operações necessárias. Não repita arquivos intactos. Use delete sem content.`;
+Retorne SOMENTE operações necessárias. Não repita arquivos intactos. Use delete sem content. Ao criar ou editar arquivos .html, escreva HTML literal e use aspas normais nos atributos; nunca deixe barras invertidas antes das aspas no conteúdo final.`;
 
   const raw = await tryModels({
     messages: [{ role: "system", content: instruction }, { role: "user", content: message }],
