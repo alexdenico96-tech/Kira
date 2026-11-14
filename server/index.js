@@ -23,6 +23,7 @@ import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/
 import { inspectProjectFiles } from "./lib/qualityGate.js";
 import { inspectVisualQuality, repairImageSources } from "./lib/visualQuality.js";
 import { designEditGuidance } from "./lib/designDirection.js";
+import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImageId } from "./lib/projectImages.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -121,6 +122,23 @@ Imagens: use generate_image quando pedirem geração. Para fotografias realistas
 Anexos: quando receber imagem ou áudio, baseie a resposta no conteúdo efetivamente recebido; não invente detalhes, transcrições ou características não verificáveis. Quando a pergunta exigir, responda de modo completo, estruturado e coerente, sem repetição desnecessária.
 Markdown puro; sem HTML decorativo.
 Precisão e honestidade técnica: nunca afirme ter inspecionado código, arquitetura, banco, logs ou configurações que não foram fornecidos. Sem evidência, apresente riscos como hipóteses ("pode ocorrer", "verifique se") e peça o código relevante para confirmar problemas específicos. Diferencie explicitamente fatos verificados, hipóteses e recomendações. Para SQL injection, priorize consultas parametrizadas; validação de entrada é defesa complementar. Não cite nomes internos de ferramentas (como create_document ou update_artifact) nas respostas comuns. Não alegue ter executado testes ou verificado arquivos sem fazê-lo.`;
+
+// KIRA_PROJECT_IMAGES_V1: imagens dos projetos geradas e guardadas pelo servidor.
+// Rota pública (tags <img> não enviam token); só serve IDs registrados pelo próprio servidor.
+app.get("/api/project-images/:id", async (req,res)=>{
+  if(!isProjectImageId(req.params.id)) return res.status(404).end();
+  res.set("Cross-Origin-Resource-Policy","cross-origin"); // o preview roda em outra origem
+  try{
+    const result=await getProjectImage(req.params.id, req.query.m);
+    if(!result) return res.status(404).end();
+    if(result.file){ res.set("Cache-Control","public, max-age=31536000, immutable"); return res.sendFile(result.file); }
+    return res.redirect(302,result.fallbackUrl);
+  }catch(err){
+    console.warn("[kira-project-image] falha:",err.message);
+    res.status(502).end();
+  }
+});
+const publicBaseUrl = req => (process.env.KIRA_PUBLIC_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/,"");
 
 const VISUAL_REFERENCE_NOTE = `REFERÊNCIA VISUAL ANEXADA: a imagem a seguir é o alvo visual do projeto. Reproduza com a máxima fidelidade possível o layout (ordem e proporção das seções, alinhamentos, colunas), a paleta (extraia as cores e declare-as como tokens em :root), a tipografia (escolha a Google Font mais parecida), raios, sombras, espaçamentos, ícones e textos visíveis. Onde a imagem e a DIREÇÃO VISUAL divergirem, a imagem vence. Não reproduza logotipos de marcas registradas; use o nome do projeto do usuário.`;
 
@@ -524,6 +542,11 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     consumeDailyBudget();
 
     let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
+    const withProjectImages = async files => {
+      const result = await rewriteProjectImages(files, publicBaseUrl(req));
+      if (result.ids.length) { console.info(`[kira-project-image] queued=${result.ids.length}`); warmProjectImages(result.ids); }
+      return result.files;
+    };
     let usedFallback = false;
     let selectedProvider = null;
     let selectedModel = null;
@@ -599,7 +622,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         const applied=applyFileOperations(existingArtifact.files,changes);
         if(!applied.manifest.created.length&&!applied.manifest.updated.length&&!applied.manifest.deleted.length) throw new Error("Nenhuma alteração válida retornada.");
         const normalized=repairGeneratedHtml(applied.files);
-        const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,normalized.files,args.summary||textMessage.slice(0,160),applied.manifest);
+        const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,await withProjectImages(normalized.files),args.summary||textMessage.slice(0,160),applied.manifest);
         artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
         reply=`Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
       } else if (functionCall?.name === "create_document") {
@@ -691,7 +714,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             const patch = await callGroqArtifactUpdateFallback({ systemInstruction: SYSTEM_PROMPT, message: artifactEditPrompt(existingArtifact, textMessage) });
             const applied=applyFileOperations(existingArtifact.files,patch.changes);
             const normalized=repairGeneratedHtml(applied.files);
-            const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,normalized.files,patch.summary,applied.manifest);
+            const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,await withProjectImages(normalized.files),patch.summary,applied.manifest);
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
@@ -877,6 +900,7 @@ if (syntax.issues.length) {
       } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); return res.status(422).json({ error: "Projeto não salvo: não foi possível verificar a sintaxe." }); }
     }
     if (artifactFiles?.length && !responseArtifactId) {
+      artifactFiles = await withProjectImages(artifactFiles);
       const createdArtifact = await createArtifactVersioned(req.user.id, conv.id, artifactName || "Artifact", artifactFiles, "Criação inicial");
       responseArtifactId = createdArtifact.id;
       artifactVersion = createdArtifact.version;

@@ -328,7 +328,7 @@ REGRAS DE ACABAMENTO VISUAL:
 5. Responsividade: mobile-first com @media (min-width: 640px), (min-width: 960px); nada pode estourar horizontalmente em 375px; imagens com max-width:100%, aspect-ratio definido e object-fit: cover.
 6. Imagens: NÃO invente URLs do Unsplash/Pexels (quase sempre quebram) nem caminhos locais inexistentes. Para cada imagem de conteúdo use uma URL gerada com a descrição exata da cena, em inglês, no formato:
    ${sampleImg}
-   Troque o texto do prompt por uma descrição específica do item (ex.: o carro exato, o prato exato), ajuste width/height à proporção usada no layout e use um seed diferente por imagem. Sempre com alt descritivo, loading="lazy" (exceto no hero), width/height ou aspect-ratio.
+   Troque o texto do prompt por uma descrição específica do item (ex.: o carro exato, o prato exato), ajuste width/height à proporção usada no layout e use um seed diferente por imagem. Sempre com alt descritivo, width/height ou aspect-ratio, e loading="lazy" em todas EXCETO a imagem do hero (que deve usar loading="eager" e fetchpriority="high"). Use no máximo 12 imagens geradas por página: priorize hero e itens principais; ícones, fundos e divisores devem ser CSS/SVG, não imagens.
 7. Ícones: SVG inline simples (stroke="currentColor", 24x24) — sem emojis como ícones e sem bibliotecas de ícones não declaradas.
 8. Conteúdo: textos reais e específicos do negócio em português (nomes, preços em R$, horários, endereços plausíveis); nada de lorem ipsum, "Título aqui" ou "Item 1".
 9. Contraste: texto sobre fundo com contraste WCAG AA (≥ 4.5:1); texto sobre fotos sempre com overlay gradiente escuro.

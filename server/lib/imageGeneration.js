@@ -4,6 +4,9 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { buildPollinationsUrl } from "./gemini.js";
 
+// Usado por lib/projectImages.js (fica aqui no topo porque os testes executam o restante do arquivo isolado).
+export { generateCloudflareImage };
+
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const imageDir = path.resolve(currentDir, "../generated-images");
 
@@ -390,3 +393,4 @@ cleanPrompt,
 
   return `/api/generated-images/${filename}`;
 }
+
