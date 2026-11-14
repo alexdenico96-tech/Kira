@@ -1,44 +1,137 @@
 import path from 'node:path';
 import { builtinModules } from 'node:module';
-const builtins=new Set(builtinModules.map(x=>x.replace(/^node:/,'')));
-const extensions=['','.js','.jsx','.ts','.tsx','.mjs','.cjs','.json','.css','.scss','.svg','.png','.jpg','.webp','/index.js','/index.jsx','/index.ts','/index.tsx'];
-const cleanPath=s=>path.posix.normalize(String(s||'').replaceAll('\\','/').replace(/^\.\//,''));
-const isSafe=p=>p && !p.startsWith('/') && !p.startsWith('../') && p!=='..' && !/^[a-z]:/i.test(p) && !p.includes('\0');
-const packageName=s=>s.startsWith('@')?s.split('/').slice(0,2).join('/'):s.split('/')[0];
-export function inspectProjectFiles(files=[]){
- const issues=[], warnings=[];
- if(!Array.isArray(files))return {ok:false,issues:['Lista de arquivos inválida'],warnings};
- const map=new Map();
- for(const f of files){
-  const p=cleanPath(f?.path);
-  if(!isSafe(p)){issues.push(`Caminho inseguro: ${String(f?.path||'').slice(0,120)}`);continue;}
-  if(map.has(p))issues.push(`Arquivo duplicado: ${p}`);
-  else map.set(p,String(f?.content||''));
- }
- let pkg=null;
- if(map.has('package.json')){
-  try{pkg=JSON.parse(map.get('package.json'));if(!pkg||typeof pkg!=='object'||Array.isArray(pkg))issues.push('package.json não é objeto JSON');}
-  catch{issues.push('package.json contém JSON inválido');}
- }
- const declared=new Set([...Object.keys(pkg?.dependencies||{}),...Object.keys(pkg?.devDependencies||{}),...Object.keys(pkg?.optionalDependencies||{})]);
- for(const [filename,content] of map){
-  if(!/\.(?:[cm]?js|jsx|ts|tsx)$/.test(filename))continue;
-  const imports=new Set();
-  const rx=/(?:\bimport\s*(?:[\s\S]*?\s+from\s*)?|\bexport\s+(?:\*|\{[^}]*\})\s+from\s*|\brequire\s*\(\s*|\bimport\s*\(\s*)["'`]([^"'`]+)["'`]/g;
-  let m;while((m=rx.exec(content)))imports.add(m[1]);
-  for(const spec of imports){
-   if(spec.startsWith('.')){
-    const target=path.posix.normalize(path.posix.join(path.posix.dirname(filename),spec));
-    if(!isSafe(target)){issues.push(`${filename}: import fora do projeto: ${spec}`);continue;}
-    if(!extensions.some(ext=>map.has(target+ext)))warnings.push(`${filename}: import local não encontrado: ${spec}`);
-   }else if(!spec.startsWith('/')&&!spec.startsWith('#')&&!spec.startsWith('node:')&&!builtins.has(spec.split('/')[0])&&!spec.startsWith('@/')&&!spec.startsWith('~/')&&!spec.startsWith('virtual:')&&!spec.startsWith('vite/')){
-    const name=packageName(spec);
-    if(pkg && !declared.has(name) && !['react/jsx-runtime','react/jsx-dev-runtime'].includes(spec))warnings.push(`${filename}: dependência não declarada: ${name}`);
-   }
+
+const builtins = new Set(builtinModules.map(name => name.replace(/^node:/, '')));
+const extensions = [
+  '', '.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs', '.json', '.css', '.scss',
+  '.sass', '.less', '.vue', '.svelte', '.astro', '.svg', '.png', '.jpg', '.jpeg',
+  '.webp', '.gif', '.woff', '.woff2', '.ttf', '.otf', '/index.js', '/index.jsx',
+  '/index.ts', '/index.tsx', '/index.vue', '/index.svelte'
+];
+
+const normalizePath = value => String(value || '').replaceAll('\\', '/').replace(/^\.\//, '');
+const cleanPath = value => path.posix.normalize(normalizePath(value));
+const isSafe = value => value && !value.startsWith('/') && !value.startsWith('../') && value !== '..' && !/^[a-z]:/i.test(value) && !value.includes('\0');
+const packageName = value => value.startsWith('@') ? value.split('/').slice(0, 2).join('/') : value.split('/')[0];
+
+function resolveLocalImport(from, specifier, files) {
+  const cleanSpecifier = specifier.split(/[?#]/, 1)[0];
+  const target = cleanPath(path.posix.join(path.posix.dirname(from), cleanSpecifier));
+  if (!isSafe(target)) return { safe: false, found: false };
+  return {
+    safe: true,
+    found: extensions.some(extension => files.has(target + extension))
+  };
+}
+
+function extractImportSpecifiers(source) {
+  const imports = new Set();
+  const patterns = [
+    /\bimport\s*(?:[\s\S]*?\s+from\s*)?["']([^"']+)["']/g,
+    /\bexport\s+(?:\*|\{[^}]*\})\s+from\s*["']([^"']+)["']/g,
+    /\brequire\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(source))) imports.add(match[1]);
   }
- }
- if(pkg?.scripts){for(const [name,cmd] of Object.entries(pkg.scripts)){
-  if(typeof cmd!=='string')warnings.push(`package.json: script ${name} não é texto`);
- }}
- return {ok:issues.length===0,issues:[...new Set(issues)],warnings:[...new Set(warnings)],filesChecked:map.size};
+  return imports;
+}
+
+export function inspectProjectFiles(files = []) {
+  const issues = [], warnings = [];
+  if (!Array.isArray(files)) return { ok: false, issues: ['Lista de arquivos inválida'], warnings, filesChecked: 0 };
+
+  const map = new Map();
+  for (const file of files) {
+    const original = normalizePath(file?.path).trim();
+    const normalized = cleanPath(original);
+    if (!isSafe(normalized) || normalized === '.') {
+      issues.push(`Caminho inseguro: ${String(file?.path || '').slice(0, 120)}`);
+      continue;
+    }
+    if (map.has(normalized)) {
+      issues.push(`Arquivo duplicado: ${normalized}`);
+      continue;
+    }
+    if (typeof file?.content !== 'string') {
+      issues.push(`${normalized}: conteúdo do arquivo inválido`);
+      continue;
+    }
+    if (!file.content.trim()) warnings.push(`${normalized}: arquivo vazio`);
+    map.set(normalized, file.content);
+  }
+
+  let pkg = null;
+  if (map.has('package.json')) {
+    try {
+      pkg = JSON.parse(map.get('package.json'));
+      if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) {
+        issues.push('package.json não é um objeto JSON');
+        pkg = null;
+      }
+    } catch {
+      issues.push('package.json contém JSON inválido');
+    }
+  }
+
+  const dependencySections = ['dependencies', 'devDependencies', 'optionalDependencies'];
+  const declared = new Set();
+  for (const section of dependencySections) {
+    const values = pkg?.[section];
+    if (values == null) continue;
+    if (typeof values !== 'object' || Array.isArray(values)) {
+      issues.push(`package.json: ${section} precisa ser um objeto`);
+      continue;
+    }
+    for (const name of Object.keys(values)) declared.add(name);
+  }
+
+  for (const [filename, content] of map) {
+    if (!/\.(?:[cm]?js|jsx|ts|tsx|vue|svelte|astro)$/i.test(filename)) continue;
+    for (const specifier of extractImportSpecifiers(content)) {
+      if (specifier.startsWith('.')) {
+        const result = resolveLocalImport(filename, specifier, map);
+        if (!result.safe) issues.push(`${filename}: import sai da pasta do projeto: ${specifier}`);
+        else if (!result.found) issues.push(`${filename}: arquivo importado não encontrado: ${specifier}`);
+        continue;
+      }
+
+      if (specifier.startsWith('/') || specifier.startsWith('#') || specifier.startsWith('node:') ||
+          /^https?:\/\//i.test(specifier) || specifier.startsWith('@/') || specifier.startsWith('~/') ||
+          specifier.startsWith('virtual:') || specifier.startsWith('vite/') ||
+          specifier.startsWith('react/jsx-runtime') || specifier.startsWith('react/jsx-dev-runtime')) continue;
+
+      const root = specifier.split('/')[0];
+      if (builtins.has(root)) continue;
+      if (pkg && !declared.has(packageName(specifier))) {
+        issues.push(`${filename}: dependência externa não declarada no package.json: ${packageName(specifier)}`);
+      } else if (!pkg) {
+        warnings.push(`${filename}: dependência externa encontrada sem package.json: ${packageName(specifier)}`);
+      }
+    }
+  }
+
+  if (pkg?.scripts != null) {
+    if (typeof pkg.scripts !== 'object' || Array.isArray(pkg.scripts)) {
+      issues.push('package.json: scripts precisa ser um objeto');
+    } else {
+      for (const [name, command] of Object.entries(pkg.scripts)) {
+        if (typeof command !== 'string' || !command.trim()) issues.push(`package.json: script ${name} inválido`);
+      }
+    }
+  }
+
+  const hasVite = Boolean(pkg?.dependencies?.vite || pkg?.devDependencies?.vite);
+  const hasNext = Boolean(pkg?.dependencies?.next || pkg?.devDependencies?.next);
+  if (hasVite && !pkg?.scripts?.build) warnings.push('projeto Vite sem script "build" no package.json');
+  if (hasNext && !pkg?.scripts?.build) warnings.push('projeto Next.js sem script "build" no package.json');
+
+  return {
+    ok: issues.length === 0,
+    issues: [...new Set(issues)],
+    warnings: [...new Set(warnings)],
+    filesChecked: map.size
+  };
 }

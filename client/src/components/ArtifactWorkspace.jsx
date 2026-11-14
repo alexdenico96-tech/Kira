@@ -23,11 +23,17 @@ function isBundledProject(files){
     paths.some(p=>/(^|\/)src\/main\.(jsx|tsx)$/.test(p));
 }
 function bundledPreviewNotice(){
-  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font:15px system-ui,sans-serif;background:#0b1424;color:#f1f5f9;padding:28px;line-height:1.6}main{max-width:550px;margin:32px auto}code,pre{background:#1c2b42;border-radius:6px;padding:4px 7px}pre{padding:16px;overflow:auto}</style></head><body><main><h2>Pré-visualização React/Vite</h2><p>Este projeto precisa ser compilado e executado pelo servidor de desenvolvimento. A pré-visualização HTML simples da Kira não executa JSX, imports nem dependências npm.</p><p>Baixe o ZIP do projeto, extraia os arquivos e execute na pasta que contém o <code>package.json</code>:</p><pre>npm install
-npm run dev</pre><p>Abra o endereço exibido pelo Vite. Esta mensagem não indica erro no projeto.</p></main></body></html>`;
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>body{font:15px system-ui,sans-serif;background:#0b1424;color:#f1f5f9;padding:28px;line-height:1.6}main{max-width:550px;margin:32px auto}code,pre{background:#1c2b42;border-radius:6px;padding:4px 7px}pre{padding:16px;overflow:auto}</style></head><body><main><h2>Pré-visualização deste projeto</h2><p>Esta stack precisa do ambiente de desenvolvimento ou build próprio. A prévia HTML isolada não executa JSX, imports, rotas nem dependências npm.</p><p>Baixe o ZIP, extraia os arquivos e execute na pasta que contém o <code>package.json</code>:</p><pre>npm install\nnpm run dev</pre><p>Abra o endereço indicado pelo terminal. Esta mensagem não significa que o projeto esteja com erro.</p></main></body></html>`;
+}
+function requiresModulePreview(files){
+  const scripts=files.filter(file=>/\.(?:m?js|jsx|ts|tsx)$/i.test(String(file.path||"")));
+  if(scripts.length>1)return true;
+  const html=files.find(file=>/(^|\/)index\.html?$/i.test(String(file.path||"")))?.content||"";
+  if(/<script\b[^>]*type=["']module["']/i.test(html))return true;
+  return scripts.some(file=>/\bimport\s+(?:[\w*{]|["'])|\bexport\s+(?:default|\{|\*)/m.test(file.content||""));
 }
 function previewDocument(files){
-  if(isBundledProject(files))return bundledPreviewNotice();
+  if(isBundledProject(files) || requiresModulePreview(files))return bundledPreviewNotice();
   const html=files.find(f=>/(^|\/)index\.html?$/i.test(f.path))||files.find(f=>/\.html?$/i.test(f.path));
   if(!html)return `<!doctype html><html><body style="font-family:system-ui;background:#071225;color:#f1f5f9;padding:32px"><h2>Preview indisponível</h2><p>Este projeto não possui um arquivo HTML.</p></body></html>`;
 
