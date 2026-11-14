@@ -1,3 +1,4 @@
+import { designBriefPrompt } from "./designDirection.js";
 const WEB_HINT = /\b(site|website|landing\s*page|p[aá]gina|html|css|javascript|js|frontend|loja|portf[oó]lio)\b/i;
 // APIs Node/Express e projetos backend não são sites estáticos, mesmo usando JavaScript.
 const BACKEND_HINT = /\b(express|node(?:\.js)?|api\s+rest|rest\s+api|backend|back-end|postgres(?:ql)?|servidor\s+(?:node|express)|server\s+(?:node|express))\b/i;
@@ -97,9 +98,10 @@ REQUISITOS DE QUALIDADE OBRIGATÓRIOS:
 - CSS deve realmente estilizar a página: layout responsivo, tipografia, espaçamento, cores, cards, botões, estados hover e navegação quando aplicável.
 - JavaScript deve implementar as interações pedidas; carrinho/login/filtros não podem ser apenas botões decorativos quando foram solicitados.
 - Se o usuário pedir uma quantidade mínima (ex.: 10 carros), cumpra a quantidade integralmente.
-- Para imagens remotas, use URLs HTTPS válidas e inclua alt text; não invente caminhos locais para imagens inexistentes.
+- Imagens: siga a regra de imagens da DIREÇÃO VISUAL abaixo (URLs geradas por descrição, com alt); não invente caminhos locais nem URLs do Unsplash.
 - Antes de responder, revise imports, exports, caminhos, seletores, IDs, dependências, scripts de execução e arquivos referenciados.
 - Nunca encerre arquivos no meio de funções, JSX, JSON ou blocos de código. Não use TODO, pseudocódigo ou componentes fictícios para funcionalidades solicitadas.
+${isWebProjectRequest(message) || !/\b(python|cli|terminal|bot|backend|api|banco de dados|sql)\b/i.test(message) ? designBriefPrompt(message, isWebProjectRequest(message) ? "vanilla-web" : "auto") : ""}
 ${issues.length?`A tentativa anterior falhou nestes pontos: ${issues.join("; ")}. Corrija todos eles.`:""}
 Use create_document e devolva TODOS os arquivos necessários no mesmo artifact.`;
 }

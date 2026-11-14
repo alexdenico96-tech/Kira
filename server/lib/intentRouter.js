@@ -3,7 +3,7 @@ const educational = /\b(?:como|como funciona|quais|qual|porque|por que|por qué|
 const action = /\b(?:crie|cria|criar|gere|gera|gerar|fa[cç]a|monte|desenvolva|construa|implemente|crea|crear|genera|haz|construye|desarrolla|build|create|generate|make|implement)\b/i;
 const project = /\b(?:projeto|proyectos?|project|projects|workspace|site|sitio|website|webapp|aplica[cç][aã]o|aplicaci[oó]n|app|dashboard|landing page|sistema|arquivos?|files?|carpeta|pasta)\b/i;
 const code = /\b(?:c[oó]digo|code|fun[cç][aã]o|funci[oó]n|function|script|snippet|componente|component)\b/i;
-const edit = /\b(?:altere|alterar|edite|editar|modifique|modificar|corrija|corrigir|atualize|atualizar|substitua|substituir|adicione|adicionar|remova|remover|mude|mudar|ajuste|ajustar|conserte|consertar|cambia|modifica|corrige|edita|actualiza|arregla|change|edit|fix|update|modify|remove)\b/i;
+const edit = /\b(?:melhore|melhorar|deixe|deixar|refa[cç]a|refazer|redesenhe|redesenhar|altere|alterar|edite|editar|modifique|modificar|corrija|corrigir|atualize|atualizar|substitua|substituir|adicione|adicionar|remova|remover|mude|mudar|ajuste|ajustar|conserte|consertar|cambia|modifica|corrige|edita|actualiza|arregla|change|edit|fix|update|modify|remove)\b/i;
 export function classifyKiraIntent(message, hasExistingProject=false) {
   const text=String(message||'').trim();
   if (!text) return {kind:'chat',editingArtifact:false,wantsArtifact:false};

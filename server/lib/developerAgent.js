@@ -1,3 +1,5 @@
+import { designBriefPrompt } from './designDirection.js';
+
 const COMPLEX_HINT = /\b(react|vite|next|vue|angular|svelte|astro|typescript|dashboard|painel|app|aplicativo|saas|api|backend|fullstack|e-?commerce|loja|autentica|login|banco de dados|database|postgres|componentes|rotas|router)\b/i;
 
 export function isComplexProjectRequest(message = '') {
@@ -193,9 +195,10 @@ PROCESSO OBRIGATÓRIO ANTES DE ENTREGAR:
 3. Gere todos os arquivos completos do projeto, inclusive package.json/configuração quando a stack exigir.
 4. Revise imports, exports, caminhos relativos, nomes de componentes, scripts e dependências.
 5. Verifique se todos os botões, formulários, filtros, links e ações pedidos têm comportamento real.
-6. Revise responsividade, acessibilidade básica, estados vazios/carregamento/erro e consistência visual.
+6. Revise responsividade, acessibilidade básica, estados vazios/carregamento/erro e fidelidade à direção visual (quando houver frontend).
 7. Não afirme que executou build ou testes. A Kira fará verificações estáticas e de preview separadamente.
 8. Só então entregue o projeto inteiro em um único artifact.
+${spec.stack === 'node' ? '' : designBriefPrompt(message, spec.stack)}
 ${issues.length ? `\nA validação determinística encontrou estes erros na tentativa anterior:\n${issues.map(item => `- ${item}`).join('\n')}\nCorrija TODOS eles e devolva novamente o projeto completo.` : ''}
 
 Não simplifique React/Next/Vue/Svelte/Angular/TypeScript para HTML puro. Não troque a stack pedida. Não entregue explicações no lugar dos arquivos.`;

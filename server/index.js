@@ -21,6 +21,8 @@ import { inferProjectMetadata, normalizeForCache, cacheFingerprint, similarity, 
 import { validateArtifact, repairWebConnections, artifactSuccessReply, artifactQualityPrompt } from "./lib/artifactQuality.js";
 import { isComplexProjectRequest, analyzeProject, developerPrompt } from "./lib/developerAgent.js";
 import { inspectProjectFiles } from "./lib/qualityGate.js";
+import { inspectVisualQuality, repairImageSources } from "./lib/visualQuality.js";
+import { designEditGuidance } from "./lib/designDirection.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -119,6 +121,8 @@ Imagens: use generate_image quando pedirem geração. Para fotografias realistas
 Anexos: quando receber imagem ou áudio, baseie a resposta no conteúdo efetivamente recebido; não invente detalhes, transcrições ou características não verificáveis. Quando a pergunta exigir, responda de modo completo, estruturado e coerente, sem repetição desnecessária.
 Markdown puro; sem HTML decorativo.
 Precisão e honestidade técnica: nunca afirme ter inspecionado código, arquitetura, banco, logs ou configurações que não foram fornecidos. Sem evidência, apresente riscos como hipóteses ("pode ocorrer", "verifique se") e peça o código relevante para confirmar problemas específicos. Diferencie explicitamente fatos verificados, hipóteses e recomendações. Para SQL injection, priorize consultas parametrizadas; validação de entrada é defesa complementar. Não cite nomes internos de ferramentas (como create_document ou update_artifact) nas respostas comuns. Não alegue ter executado testes ou verificado arquivos sem fazê-lo.`;
+
+const VISUAL_REFERENCE_NOTE = `REFERÊNCIA VISUAL ANEXADA: a imagem a seguir é o alvo visual do projeto. Reproduza com a máxima fidelidade possível o layout (ordem e proporção das seções, alinhamentos, colunas), a paleta (extraia as cores e declare-as como tokens em :root), a tipografia (escolha a Google Font mais parecida), raios, sombras, espaçamentos, ícones e textos visíveis. Onde a imagem e a DIREÇÃO VISUAL divergirem, a imagem vence. Não reproduza logotipos de marcas registradas; use o nome do projeto do usuário.`;
 
 const CURRENT_TERMS_VERSION = "2026-10-04-v1";
 const CURRENT_DISCLAIMER_VERSION = "2026-10-04-v1";
@@ -401,7 +405,7 @@ Retorne update_artifact com SOMENTE operações necessárias:
 - update: conteúdo COMPLETO do arquivo alterado;
 - create: conteúdo COMPLETO do novo arquivo;
 - delete: somente path.
-Nunca repita arquivos intactos.`;
+Nunca repita arquivos intactos.${designEditGuidance(request)}`;
 }
 
 app.get("/api/artifacts/:id", requireAuth, async (req,res)=>{
@@ -549,10 +553,13 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
         selectedProvider="openai"; selectedModel=route.providers[0].model;
       }
+      // KIRA_VISUAL_REFERENCE_V1: print/mockup anexado vira referência visual do projeto (antes era descartado).
+      const referenceParts = image?.data ? [{ text: VISUAL_REFERENCE_NOTE }, { inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } }] : [];
+      const projectPrompt = (issues=[]) => isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,issues) : artifactQualityPrompt(textMessage,issues);
       const aiContents = editingArtifact
-        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }] }]
+        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }, ...referenceParts] }]
         : (wantsArtifact
-          ? [...history, { role: "user", parts: [{ text: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage) }] }]
+          ? [...history, { role: "user", parts: [{ text: projectPrompt() }, ...referenceParts] }]
           : contents);
       // KIRA_ADVANCED_GROQ_FIRST_V1: apenas conversa técnica, nunca workspace.
       if (!reply && complexity==="advanced" && !editingArtifact && !wantsArtifact && !image && !audio && GROQ_ENABLED) {
@@ -604,25 +611,40 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             : []
         });
 
+        const normalizeFiles=files=>repairImageSources(repairPackageJsonNewlines(repairWebConnections(files))).files;
         let parsed=parseArtifactArgs(functionCall.args||{});
-        parsed.files=repairPackageJsonNewlines(repairWebConnections(parsed.files));
+        parsed.files=normalizeFiles(parsed.files);
         let quality=validateArtifact(parsed.files,textMessage);
         let devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
-        const firstIssues=[...quality.issues,...devQuality.issues];
+        let visual=inspectVisualQuality(parsed.files,textMessage);
+        console.info(`[kira-visual] attempt=1 score=${visual.score} issues=${visual.issues.length}`);
+        // Problemas visuais entram na nova tentativa, mas nunca impedem a entrega.
+        const firstIssues=[...quality.issues,...devQuality.issues,...visual.issues];
 
         // Uma única tentativa de reparo: só gasta outra chamada se validação determinística detectar erro real.
         if(firstIssues.length){
           console.warn("[developer-agent] primeira tentativa rejeitada:", firstIssues.join("; "));
           const retryData=await callGemini({
             systemInstruction:SYSTEM_PROMPT,
-            contents:[{role:"user",parts:[{text:isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,firstIssues) : artifactQualityPrompt(textMessage,firstIssues)}]}],
+            contents:[{role:"user",parts:[{text:projectPrompt(firstIssues)}, ...referenceParts]}],
             forceFunctionName:"create_document"
           });
           const retryCall=(retryData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
+          const previous=parsed;
           if(retryCall?.name==="create_document") parsed=parseArtifactArgs(retryCall.args||{});
-          parsed.files=repairPackageJsonNewlines(repairWebConnections(parsed.files));
+          parsed.files=normalizeFiles(parsed.files);
           quality=validateArtifact(parsed.files,textMessage);
           devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
+          const retryVisual=inspectVisualQuality(parsed.files,textMessage);
+          console.info(`[kira-visual] attempt=2 score=${retryVisual.score} issues=${retryVisual.issues.length}`);
+          // Se a 1ª tentativa só tinha problemas visuais e a 2ª ficou estruturalmente pior ou visualmente pior, mantém a 1ª.
+          const firstStructural=firstIssues.length-visual.issues.length;
+          const retryStructural=quality.issues.length+devQuality.issues.length;
+          if(firstStructural===0 && (retryStructural>0 || retryVisual.score<visual.score)){
+            parsed=previous;
+            quality=validateArtifact(parsed.files,textMessage);
+            devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
+          } else visual=retryVisual;
         }
 
         const finalIssues=[...quality.issues,...devQuality.issues];
@@ -676,7 +698,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
             const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
             artifactName = artifact.projectName;
-            artifactFiles = repairPackageJsonNewlines(repairWebConnections(artifact.files));
+            artifactFiles = repairImageSources(repairPackageJsonNewlines(repairWebConnections(artifact.files))).files;
+            console.info(`[kira-visual] provider=groq score=${inspectVisualQuality(artifactFiles,textMessage).score}`);
             const quality=validateArtifact(artifactFiles,textMessage);
             const devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(artifactFiles,textMessage) : {ok:true,issues:[]};
             let issues=[...quality.issues,...devQuality.issues];
