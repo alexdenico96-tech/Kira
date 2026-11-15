@@ -1,4 +1,6 @@
 import { designBriefPrompt } from './designDirection.js';
+import { inspectReactProject } from './reactChecks.js';
+import { requirementsPrompt } from './requirements.js';
 
 const COMPLEX_HINT = /\b(react|vite|next|vue|angular|svelte|astro|typescript|dashboard|painel|app|aplicativo|saas|api|backend|fullstack|e-?commerce|loja|autentica|login|banco de dados|database|postgres|componentes|rotas|router)\b/i;
 
@@ -33,11 +35,16 @@ export function buildProjectSpec(message = '') {
   ];
   const templates = {
     'react-vite': [
-      'package.json com scripts dev/build e dependências necessárias',
-      'index.html, vite.config e src/main.jsx ou src/main.tsx',
-      'src/App.jsx ou src/App.tsx',
-      'componentes e páginas separados conforme a complexidade',
-      'estilos reais, responsivos e consistentes'
+      'package.json com scripts dev/build e dependências necessárias (react, react-dom; vite e @vitejs/plugin-react em devDependencies)',
+      'index.html na raiz com <div id="root"></div> e <script type="module" src="/src/main.jsx"></script>; vite.config.js mínimo com o plugin react',
+      'src/main.jsx renderiza <App /> com createRoot e importa o CSS global (src/index.css)',
+      'src/App.jsx; páginas em src/pages/ e componentes em src/components/, cada arquivo com export default do seu componente',
+      'imports SEMPRE relativos ("./components/Header") — nunca aliases "@/" nem import.meta.glob',
+      'todo componente usado em JSX e todo hook (useState, useEffect, useNavigate...) precisa estar importado no arquivo',
+      'várias páginas → react-router-dom v6 (BrowserRouter, Routes, Route, Link/NavLink), uma rota e um link de navegação para CADA página pedida',
+      'dados de exemplo em src/data/*.js com a quantidade exata pedida; estado compartilhado (carrinho, login, favoritos) via Context + localStorage quando fizer sentido',
+      'sem backend real: simule chamadas com Promise + setTimeout para exibir carregamento, vazio e erro',
+      'estilos: CSS global com tokens em :root (ou Tailwind v3 com tailwind.config.js + postcss.config.js SOMENTE se o usuário pedir Tailwind); sem bibliotecas de UI não pedidas'
     ],
     next: [
       'package.json com scripts dev/build/start e dependências Next/React',
@@ -160,6 +167,8 @@ export function analyzeProject(files = [], message = '') {
     }
   }
 
+  if (clean.some(file => /\.(?:jsx|tsx)$/i.test(file.path))) issues.push(...inspectReactProject(clean).issues);
+
   const paths = [...byPath.keys()];
   if (stack === 'react-vite') {
     if (!byPath.has('index.html')) issues.push('falta index.html');
@@ -180,7 +189,7 @@ export function analyzeProject(files = [], message = '') {
   return { ok: issues.length === 0, issues: [...new Set(issues)], warnings: [...new Set(warnings)], stack };
 }
 
-export function developerPrompt(message, issues = []) {
+export function developerPrompt(message, issues = [], requirements = []) {
   const spec = buildProjectSpec(message);
   return `${message}
 
@@ -198,6 +207,7 @@ PROCESSO OBRIGATÓRIO ANTES DE ENTREGAR:
 6. Revise responsividade, acessibilidade básica, estados vazios/carregamento/erro e fidelidade à direção visual (quando houver frontend).
 7. Não afirme que executou build ou testes. A Kira fará verificações estáticas e de preview separadamente.
 8. Só então entregue o projeto inteiro em um único artifact.
+${requirementsPrompt(requirements)}
 ${spec.stack === 'node' ? '' : designBriefPrompt(message, spec.stack)}
 ${issues.length ? `\nA validação determinística encontrou estes erros na tentativa anterior:\n${issues.map(item => `- ${item}`).join('\n')}\nCorrija TODOS eles e devolva novamente o projeto completo.` : ''}
 

@@ -24,6 +24,7 @@ import { inspectProjectFiles } from "./lib/qualityGate.js";
 import { inspectVisualQuality, repairImageSources } from "./lib/visualQuality.js";
 import { designEditGuidance } from "./lib/designDirection.js";
 import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImageId } from "./lib/projectImages.js";
+import { extractRequirements, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -138,6 +139,56 @@ app.get("/api/project-images/:id", async (req,res)=>{
     res.status(502).end();
   }
 });
+// KIRA_DEVELOPER_FIX_PASS_V1: prompt de correção cirúrgica (só arquivos com problema + requisitos faltantes).
+function projectFixPrompt(request, evaluation, requirements) {
+  const files = evaluation.files;
+  const mentioned = new Set();
+  for (const issue of evaluation.issues) for (const f of files) if (issue.includes(f.path)) mentioned.add(f.path);
+  // Requisitos faltando costumam envolver rotas/navegação/estilos globais.
+  const hubs = files.filter(f => /(^|\/)(App\.[jt]sx?|main\.[jt]sx?|index\.html|index\.css|style\.css|routes?\.[jt]sx?)$/i.test(f.path));
+  if (evaluation.req.missing.length || evaluation.visual.issues.length) hubs.forEach(f => mentioned.add(f.path));
+  let budget = 90000;
+  const context = [];
+  for (const f of files.filter(f => mentioned.has(f.path))) {
+    if (f.content.length > budget) continue;
+    budget -= f.content.length;
+    context.push(`--- ${f.path} ---\n${f.content}`);
+  }
+  const missingReqs = requirements.filter(r => evaluation.req.missing.some(m => m.id === r.id));
+  return `Você está CORRIGINDO um projeto já gerado. Mantenha tudo o que já funciona.
+Pedido original do usuário:
+${String(request).slice(0, 6000)}
+
+Arquivos do projeto (manifesto):
+${files.map(f => f.path).join("\n")}
+
+PROBLEMAS DETECTADOS (corrija TODOS):
+${evaluation.issues.map(i => `- ${i}`).join("\n")}
+${missingReqs.length ? requirementsPrompt(missingReqs).replace(/- Preencha "coverage"[^\n]*/, "") : ""}
+
+Conteúdo dos arquivos relevantes:
+${context.join("\n\n")}
+
+Retorne update_artifact somente com as operações necessárias: update/create com o conteúdo COMPLETO do arquivo.
+Pode criar arquivos novos (páginas, componentes, dados) para cumprir requisitos faltantes, e deve ligá-los (imports, rotas, links).
+Não remova funcionalidades existentes, não troque a stack e não reescreva arquivos que não têm problema.`;
+}
+
+function requirementsNote(check) {
+  if (!check?.missing?.length) return "";
+  return `\n\nAtenção: não consegui confirmar no código ${check.missing.length === 1 ? "este item" : "estes itens"} do seu pedido — me diga se quer que eu ajuste:\n${check.missing.slice(0, 6).map(r => `- ${r.text}`).join("\n")}`;
+}
+
+async function askRequirementsModel(prompt) {
+  const instruction = "Você extrai requisitos de pedidos de software e responde somente JSON válido.";
+  if (GROQ_ENABLED) {
+    try { return await callGroqFallback({ systemInstruction: instruction, message: prompt, history: [] }); }
+    catch (err) { console.warn("[kira-requirements] groq indisponível:", err.status || err.message); }
+  }
+  const data = await callGemini({ systemInstruction: instruction, contents: [{ role: "user", parts: [{ text: prompt }] }] });
+  return (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join("\n");
+}
+
 const publicBaseUrl = req => (process.env.KIRA_PUBLIC_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/,"");
 
 const VISUAL_REFERENCE_NOTE = `REFERÊNCIA VISUAL ANEXADA: a imagem a seguir é o alvo visual do projeto. Reproduza com a máxima fidelidade possível o layout (ordem e proporção das seções, alinhamentos, colunas), a paleta (extraia as cores e declare-as como tokens em :root), a tipografia (escolha a Google Font mais parecida), raios, sombras, espaçamentos, ícones e textos visíveis. Onde a imagem e a DIREÇÃO VISUAL divergirem, a imagem vence. Não reproduza logotipos de marcas registradas; use o nome do projeto do usuário.`;
@@ -542,6 +593,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     consumeDailyBudget();
 
     let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
+    let fidelityNote = "";
+    let requirements = []; // checklist de fidelidade (também usado no fallback Groq)
     const withProjectImages = async files => {
       const result = await rewriteProjectImages(files, publicBaseUrl(req));
       if (result.ids.length) { console.info(`[kira-project-image] queued=${result.ids.length}`); warmProjectImages(result.ids); }
@@ -578,7 +631,13 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       }
       // KIRA_VISUAL_REFERENCE_V1: print/mockup anexado vira referência visual do projeto (antes era descartado).
       const referenceParts = image?.data ? [{ text: VISUAL_REFERENCE_NOTE }, { inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } }] : [];
-      const projectPrompt = (issues=[]) => isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,issues) : artifactQualityPrompt(textMessage,issues);
+      // KIRA_REQUIREMENTS_V1: pedidos complexos viram um checklist verificável antes da geração.
+      if (wantsArtifact && !reply && isComplexProjectRequest(textMessage)) {
+        const extracted = await extractRequirements(textMessage, askRequirementsModel);
+        requirements = extracted.requirements;
+        console.info(`[kira-requirements] source=${extracted.source} count=${requirements.length}`);
+      }
+      const projectPrompt = (issues=[]) => isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,issues,requirements) : artifactQualityPrompt(textMessage,issues);
       const aiContents = editingArtifact
         ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }, ...referenceParts] }]
         : (wantsArtifact
@@ -635,51 +694,68 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         });
 
         const normalizeFiles=files=>repairImageSources(repairPackageJsonNewlines(repairWebConnections(files))).files;
-        let parsed=parseArtifactArgs(functionCall.args||{});
-        parsed.files=normalizeFiles(parsed.files);
-        let quality=validateArtifact(parsed.files,textMessage);
-        let devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
-        let visual=inspectVisualQuality(parsed.files,textMessage);
-        console.info(`[kira-visual] attempt=1 score=${visual.score} issues=${visual.issues.length}`);
-        // Problemas visuais entram na nova tentativa, mas nunca impedem a entrega.
-        const firstIssues=[...quality.issues,...devQuality.issues,...visual.issues];
+        const complex=isComplexProjectRequest(textMessage);
+        // Avalia uma versão do projeto: estrutura (bloqueia), requisitos (fidelidade) e visual (acabamento).
+        const evaluate=(files,coverage)=>{
+          const quality=validateArtifact(files,textMessage);
+          const dev=complex ? analyzeProject(files,textMessage) : {ok:true,issues:[]};
+          const visual=inspectVisualQuality(files,textMessage);
+          const req=verifyRequirements(files,requirements,coverage);
+          return { files: quality.files.length ? quality.files : files, coverage, structural:[...quality.issues,...dev.issues], visual, req,
+            issues:[...quality.issues,...dev.issues,...requirementIssues(req),...visual.issues] };
+        };
+        // Melhor versão: menos erros estruturais, depois mais requisitos atendidos, depois melhor nota visual.
+        const better=(a,b)=> a.structural.length!==b.structural.length ? a.structural.length<b.structural.length
+          : a.req.missing.length!==b.req.missing.length ? a.req.missing.length<b.req.missing.length
+          : a.visual.score>=b.visual.score;
+        const logEval=(label,e)=>console.info(`[kira-developer] ${label} structural=${e.structural.length} requirements=${e.req.covered}/${e.req.total} visual=${e.visual.score}`);
 
-        // Uma única tentativa de reparo: só gasta outra chamada se validação determinística detectar erro real.
-        if(firstIssues.length){
-          console.warn("[developer-agent] primeira tentativa rejeitada:", firstIssues.join("; "));
-          const retryData=await callGemini({
-            systemInstruction:SYSTEM_PROMPT,
-            contents:[{role:"user",parts:[{text:projectPrompt(firstIssues)}, ...referenceParts]}],
-            forceFunctionName:"create_document"
-          });
+        const finishReason=candidate?.finishReason;
+        if(finishReason && finishReason!=="STOP") console.warn(`[kira-developer] finish_reason=${finishReason}`);
+        let parsed=parseArtifactArgs(functionCall.args||{});
+        const projectName=parsed.name;
+        let best=evaluate(normalizeFiles(parsed.files),functionCall.args?.coverage);
+        logEval("attempt=1",best);
+
+        // Tentativa 2: projeto cortado ou sem arquivos essenciais → regenera inteiro; senão → correção cirúrgica,
+        // que mantém o que já está certo e só reescreve/cria os arquivos com problema.
+        const missingCore=best.structural.some(i=>/^falta |nenhum arquivo válido|package\.json/.test(i));
+        if(best.issues.length && (finishReason==="MAX_TOKENS" || missingCore || best.files.length<2)){
+          const retryData=await callGemini({ systemInstruction:SYSTEM_PROMPT, contents:[{role:"user",parts:[{text:projectPrompt(best.issues)}, ...referenceParts]}], forceFunctionName:"create_document" });
           const retryCall=(retryData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
-          const previous=parsed;
-          if(retryCall?.name==="create_document") parsed=parseArtifactArgs(retryCall.args||{});
-          parsed.files=normalizeFiles(parsed.files);
-          quality=validateArtifact(parsed.files,textMessage);
-          devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
-          const retryVisual=inspectVisualQuality(parsed.files,textMessage);
-          console.info(`[kira-visual] attempt=2 score=${retryVisual.score} issues=${retryVisual.issues.length}`);
-          // Se a 1ª tentativa só tinha problemas visuais e a 2ª ficou estruturalmente pior ou visualmente pior, mantém a 1ª.
-          const firstStructural=firstIssues.length-visual.issues.length;
-          const retryStructural=quality.issues.length+devQuality.issues.length;
-          if(firstStructural===0 && (retryStructural>0 || retryVisual.score<visual.score)){
-            parsed=previous;
-            quality=validateArtifact(parsed.files,textMessage);
-            devQuality=isComplexProjectRequest(textMessage) ? analyzeProject(parsed.files,textMessage) : {ok:true,issues:[]};
-          } else visual=retryVisual;
+          if(retryCall?.name==="create_document"){
+            const retried=evaluate(normalizeFiles(parseArtifactArgs(retryCall.args||{}).files),retryCall.args?.coverage);
+            logEval("attempt=2 mode=regenerate",retried);
+            if(better(retried,best)) best=retried;
+          }
+        }
+        for(let pass=1; pass<=2 && best.issues.length; pass++){
+          // Problemas só visuais na 2ª passada não justificam outra chamada.
+          if(pass===2 && !best.structural.length && !best.req.missing.length) break;
+          try{
+            const fixData=await callGemini({ systemInstruction:SYSTEM_PROMPT, contents:[{role:"user",parts:[{text:projectFixPrompt(textMessage,best,requirements)}, ...referenceParts]}], forceFunctionName:"update_artifact" });
+            const fixCall=(fixData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
+            const changes=Array.isArray(fixCall?.args?.changes)?fixCall.args.changes:[];
+            if(!changes.length) break;
+            const applied=applyFileOperations(best.files,changes);
+            const fixed=evaluate(normalizeFiles(applied.files),best.coverage);
+            logEval(`fix=${pass} changed=${changes.length}`,fixed);
+            if(better(fixed,best)) best=fixed; else break;
+          }catch(fixErr){
+            console.warn("[kira-developer] correção cirúrgica falhou:",fixErr.status||fixErr.message);
+            break;
+          }
         }
 
-        const finalIssues=[...quality.issues,...devQuality.issues];
-        if(finalIssues.length){
-          const e=new Error(`Artifact reprovado no Developer Agent: ${finalIssues.join("; ")}`);
+        if(best.structural.length){
+          const e=new Error(`Artifact reprovado no Developer Agent: ${best.structural.join("; ")}`);
           e.code="artifact_quality_failed";
           throw e;
         }
 
-        artifactName=parsed.name;
-        artifactFiles=quality.files;
-        reply=artifactSuccessReply(artifactFiles);
+        artifactName=projectName;
+        artifactFiles=best.files;
+        reply=artifactSuccessReply(artifactFiles); fidelityNote=requirementsNote(best.req);
       } else if (functionCall?.name === "control_device") {
         const { domain, service, entity_id } = functionCall.args || {};
         try {
@@ -719,7 +795,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
             // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
+            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,[],requirements) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
             artifactName = artifact.projectName;
             artifactFiles = repairImageSources(repairPackageJsonNewlines(repairWebConnections(artifact.files))).files;
             console.info(`[kira-visual] provider=groq score=${inspectVisualQuality(artifactFiles,textMessage).score}`);
@@ -799,7 +875,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
               // Nunca sobrescrever o package.json reparado com o snapshot anterior.
               artifactFiles=quality.files;
             }
-            reply = artifactSuccessReply(artifactFiles);
+            const groqReq = verifyRequirements(artifactFiles, requirements, []);
+            if (requirements.length) console.info(`[kira-developer] provider=groq requirements=${groqReq.covered}/${groqReq.total}`);
+            reply = artifactSuccessReply(artifactFiles); fidelityNote = requirementsNote(groqReq);
           } else {
             reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage, history: groqHistory, onSelectedModel: (model) => { selectedModel=model; } });
           }
@@ -899,6 +977,7 @@ if (syntax.issues.length) {
 }
       } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); return res.status(422).json({ error: "Projeto não salvo: não foi possível verificar a sintaxe." }); }
     }
+    if (fidelityNote && artifactFiles?.length) reply += fidelityNote;
     if (artifactFiles?.length && !responseArtifactId) {
       artifactFiles = await withProjectImages(artifactFiles);
       const createdArtifact = await createArtifactVersioned(req.user.id, conv.id, artifactName || "Artifact", artifactFiles, "Criação inicial");

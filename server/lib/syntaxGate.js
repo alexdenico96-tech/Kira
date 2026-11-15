@@ -12,18 +12,23 @@ export function inspectProjectSyntax(files = []) {
   let pkg;
   try { if (packageFile) pkg = JSON.parse(packageFile.content); } catch { /* handled by existing gate */ }
   const type = pkg?.type === 'module' ? 'module' : 'commonjs';
+  // Projetos com bundler (Vite/React/Next/Vue...) usam ESM e até JSX em arquivos .js, mesmo sem "type":"module".
+  // Rodar esses arquivos como CommonJS no node --check reprovava projetos válidos ("Unexpected token 'export'").
+  const deps = { ...(pkg?.dependencies || {}), ...(pkg?.devDependencies || {}) };
+  const bundled = ['vite', 'react', 'react-dom', 'next', 'vue', 'svelte', '@sveltejs/kit', 'astro', 'webpack', 'parcel', 'react-scripts', '@angular/core', 'preact', 'solid-js'].some(name => deps[name]);
   for (const f of all) {
     const name = String(f?.path || '').replaceAll('\\', '/');
    if (!/\.(?:js|mjs|cjs|jsx|tsx|ts)$/i.test(name)) continue;
     if (checked >= 25 || typeof f.content !== 'string' || Buffer.byteLength(f.content, 'utf8') > 128 * 1024) { skipped++; continue; }
     // Analisa JSX e TypeScript sem executar o código gerado.
-if (/\.(?:jsx|tsx|ts)$/i.test(name)) {
+const bundledJs = bundled && /\.(?:js|mjs)$/i.test(name) && !/(?:^|\/)(?:server|api|backend)\//i.test(name);
+if (/\.(?:jsx|tsx|ts)$/i.test(name) || bundledJs) {
   try {
     parse(f.content, {
       sourceType: 'unambiguous',
       plugins: [
         ...(name.endsWith('.tsx') || name.endsWith('.ts') ? ['typescript'] : []),
-        ...(name.endsWith('.jsx') || name.endsWith('.tsx') ? ['jsx'] : [])
+        ...(name.endsWith('.jsx') || name.endsWith('.tsx') || bundledJs ? ['jsx'] : [])
       ]
     });
   } catch (error) {

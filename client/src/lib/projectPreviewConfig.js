@@ -70,8 +70,130 @@ function withoutPreviewManagedPackages(source = {}) {
   );
 }
 
+// KIRA_REACT_BROWSER_PREVIEW_V1
+// Projetos React (com ou sem Vite) rodam no empacotador nativo do Sandpack em vez do
+// Vite emulado no Nodebox, que é lento e quebra com Tailwind, aliases e import.meta.env.
+// Os arquivos do usuário não mudam: só a cópia enviada ao preview é adaptada.
+const BUILD_ONLY_PACKAGE = /^(?:vite|vite-.*|@vitejs\/.*|esbuild(?:-wasm)?|tailwindcss|@tailwindcss\/.*|postcss.*|autoprefixer|typescript|eslint.*|@eslint\/.*|@typescript-eslint\/.*|@types\/.*|prettier.*|vitest|@vitest\/.*|@testing-library\/.*|jsdom|globals|react-scripts)$/;
+const CONFIG_FILE = /^\/(?:vite|vitest|tailwind|postcss|eslint|prettier)\.config\.[cm]?[jt]s$|^\/(?:tsconfig.*|jsconfig|\.eslintrc.*|\.prettierrc.*)(?:\.json)?$|^\/\.eslintrc$/;
+const CODE_FILE = /\.(?:[cm]?jsx?|tsx?)$/i;
+const ENTRY_CANDIDATES = ["/src/main.jsx", "/src/main.tsx", "/src/main.js", "/src/main.ts", "/src/index.jsx", "/src/index.tsx", "/src/index.js", "/src/index.ts", "/main.jsx", "/index.jsx", "/main.tsx", "/index.tsx"];
+const TAILWIND_DIRECTIVE = /@tailwind\b|@apply\b|@theme\b|@layer\s+(?:base|components|utilities)\b|@import\s+["']tailwindcss|@plugin\b|@config\b/;
+
+function isReactBrowserProject(pkg) {
+  return hasPackage(pkg, "react") && !hasPackage(pkg, "next") && !hasPackage(pkg, "@remix-run/react");
+}
+
+function findEntry(files, html) {
+  const fromHtml = html?.match(/<script[^>]*type=["']module["'][^>]*src=["']\.?\/?([^"']+)["']/i)?.[1];
+  if (fromHtml) {
+    const candidate = normalizeProjectPath(fromHtml);
+    if (files[candidate]) return candidate;
+  }
+  return ENTRY_CANDIDATES.find(path => files[path]) || null;
+}
+
+function relativeImport(fromFile, targetPath) {
+  const from = fromFile.split("/").slice(1, -1);
+  const to = targetPath.split("/").slice(1);
+  while (from.length && to.length > 1 && from[0] === to[0]) { from.shift(); to.shift(); }
+  const prefix = from.length ? "../".repeat(from.length) : "./";
+  return prefix + to.join("/");
+}
+
+function adaptCode(path, code) {
+  return code
+    // Aliases do Vite/TS ("@/components/X", "~/lib/y") viram caminhos relativos.
+    .replace(/(from\s*|import\s*\(\s*|import\s+)(["'])[@~]\/([^"']+)\2/g,
+      (match, lead, quote, rest) => `${lead}${quote}${relativeImport(path, `/src/${rest}`)}${quote}`)
+    // import.meta.env não existe no empacotador do navegador.
+    .replace(/import\.meta\.env\.([A-Z_][A-Z0-9_]*)/g, (m, key) =>
+      key === "DEV" ? "true" : key === "PROD" ? "false" : key === "MODE" ? '"development"' : key === "BASE_URL" ? '"/"' : "undefined")
+    .replace(/import\.meta\.env/g, '({ MODE: "development", DEV: true, PROD: false, BASE_URL: "/" })');
+}
+
+function tailwindHead(projectFiles, pkg, tailwindCss) {
+  const version = String(pkg.devDependencies?.tailwindcss || pkg.dependencies?.tailwindcss || "");
+  const v4 = /^\D*4/.test(version) || hasPackage(pkg, "@tailwindcss/vite") || /@import\s+["']tailwindcss/.test(tailwindCss);
+  const css = tailwindCss
+    .replace(/@tailwind\s+[\w-]+\s*;?/g, "")
+    .replace(/@import\s+["']tailwindcss[^;]*;?/g, "")
+    .replace(/@config\s+[^;]+;?/g, "")
+    .replace(/@plugin\s+[^;]+;?/g, "");
+  if (v4) {
+    return `<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>\n<style type="text/tailwindcss">${css}</style>`;
+  }
+  const configFile = Object.keys(projectFiles).find(path => /^\/tailwind\.config\.[cm]?[jt]s$/.test(path));
+  let config = "";
+  if (configFile) {
+    const body = projectFiles[configFile].code
+      .replace(/^\s*import\s.*$/gm, "")
+      .replace(/\/\*\*?[\s\S]*?\*\//g, "")
+      .replace(/\bplugins\s*:\s*\[[\s\S]*?\]\s*,?/g, "")
+      .replace(/\bsatisfies\s+\w+/g, "")
+      .replace(/\bexport\s+default\b|\bmodule\.exports\s*=/, "tailwind.config =");
+    if (/tailwind\.config =/.test(body) && !/\brequire\s*\(/.test(body)) config = `<script>try{${body}}catch(e){console.warn("tailwind.config ignorado no preview",e)}</script>`;
+  }
+  return `<script src="https://cdn.tailwindcss.com"></script>\n${config}\n<style type="text/tailwindcss">${css}</style>`;
+}
+
+function buildReactBrowserPreview(files, pkg) {
+  const typescript = isTypeScriptProject(files);
+  const projectFiles = {};
+  for (const file of files || []) {
+    if (!file?.path) continue;
+    projectFiles[normalizeProjectPath(file.path)] = { code: String(file.content ?? "") };
+  }
+  const htmlPath = ["/index.html", "/public/index.html"].find(path => projectFiles[path]);
+  const html = htmlPath ? projectFiles[htmlPath].code : "";
+  const entry = findEntry(projectFiles, html);
+  if (!entry) return null;
+
+  const usesTailwind = hasPackage(pkg, "tailwindcss") || hasPackage(pkg, "@tailwindcss/vite") ||
+    Object.keys(projectFiles).some(path => /^\/tailwind\.config\./.test(path));
+  const previewFiles = {};
+  let tailwindCss = "";
+  for (const [path, file] of Object.entries(projectFiles)) {
+    if (path === "/package.json" || path === htmlPath || CONFIG_FILE.test(path)) continue;
+    if (CODE_FILE.test(path)) previewFiles[path] = { code: adaptCode(path, file.code) };
+    else if (/\.css$/i.test(path) && usesTailwind && TAILWIND_DIRECTIVE.test(file.code)) {
+      // CSS com diretivas do Tailwind é processado pelo Tailwind do navegador; o import continua válido.
+      tailwindCss += `\n/* ${path} */\n${file.code}`;
+      previewFiles[path] = { code: `/* ${path}: processado pelo Tailwind no preview */` };
+    } else previewFiles[path] = file;
+  }
+
+  let page = html || '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body><div id="root"></div></body></html>';
+  page = page.replace(/<script[^>]*type=["']module["'][^>]*src=["'](?!https?:)[^"']*["'][^>]*>\s*<\/script>/gi, "");
+  if (!/id=["'](?:root|app)["']/.test(page)) page = page.replace(/<body([^>]*)>/i, '<body$1>\n<div id="root"></div>');
+  if (usesTailwind) {
+    const head = tailwindHead(projectFiles, pkg, tailwindCss);
+    page = /<\/head>/i.test(page) ? page.replace(/<\/head>/i, `${head}\n</head>`) : `${head}\n${page}`;
+  }
+  previewFiles["/public/index.html"] = { code: page };
+
+  const dependencies = {};
+  for (const section of [pkg.dependencies, pkg.devDependencies]) {
+    for (const [name, version] of Object.entries(section || {})) {
+      if (typeof version === "string" && !BUILD_ONLY_PACKAGE.test(name) && !/^(?:file|link|workspace):/.test(version)) dependencies[name] = version;
+    }
+  }
+  dependencies.react ||= "^18.3.1";
+  dependencies["react-dom"] ||= dependencies.react;
+
+  return {
+    template: typescript ? "react-ts" : "react",
+    files: previewFiles,
+    customSetup: { entry, dependencies }
+  };
+}
+
 export function buildSandpackPreviewConfig(files = []) {
   const pkg = readPackage(files);
+  if (isReactBrowserProject(pkg)) {
+    const browserPreview = buildReactBrowserPreview(files, pkg);
+    if (browserPreview) return browserPreview;
+  }
   const template = selectTemplate(files, pkg);
   const viteTemplate = template.startsWith("vite-") || template === "vite";
   const projectFiles = {};

@@ -46,6 +46,19 @@ const DOCUMENT_TOOL = {
           required: ["path", "content"]
         }
       },
+      coverage: {
+        type: "ARRAY",
+        description: "Para cada requisito do CHECKLIST DE FIDELIDADE (quando houver): id, arquivos onde foi implementado e como.",
+        items: {
+          type: "OBJECT",
+          properties: {
+            id: { type: "STRING", description: "Id do requisito, ex: R1" },
+            files: { type: "ARRAY", items: { type: "STRING" } },
+            how: { type: "STRING", description: "Como foi implementado, em uma frase." }
+          },
+          required: ["id", "files"]
+        }
+      },
     },
     required: ["projectName", "files"]
   }
@@ -105,7 +118,7 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
   const hasAudio = contents.some(c => c.parts?.some(p => p.inlineData?.mimeType?.startsWith("audio/")));
   const res = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
-    signal: AbortSignal.timeout(Math.max(3000, Number(hasAudio ? (process.env.KIRA_GEMINI_AUDIO_TIMEOUT_MS || 60000) : (process.env.KIRA_GEMINI_TIMEOUT_MS || (forceFunctionName ? 45000 : 18000))))),
+    signal: AbortSignal.timeout(Math.max(3000, Number(hasAudio ? (process.env.KIRA_GEMINI_AUDIO_TIMEOUT_MS || 60000) : (forceFunctionName ? (process.env.KIRA_GEMINI_ARTIFACT_TIMEOUT_MS || 150000) : (process.env.KIRA_GEMINI_TIMEOUT_MS || 18000))))),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },
@@ -118,7 +131,8 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
       } : {}),
       generationConfig: {
         temperature: forceFunctionName ? 0.25 : 0.65,
-        maxOutputTokens: forceFunctionName ? 16384 : 8192
+        // Projetos complexos não cabem em 16k tokens; cortar o projeto é a principal causa de infidelidade.
+        maxOutputTokens: forceFunctionName ? Number(process.env.KIRA_GEMINI_ARTIFACT_MAX_TOKENS || 32768) : 8192
       }
     })
   });
