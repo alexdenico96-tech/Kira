@@ -24,13 +24,25 @@ const SEARCH_HINTS = [
   /\b(previs[aã]o do tempo|clima em|vai chover|temperatura em)\b/i,
   /\bquem [ée] (?:o|a) (?:atual |novo |nova )?(?:presidente|ceo|ministr[oa]|governador[a]?|prefeit[oa]|t[ée]cnico|treinador[a]?|papa|l[ií]der|dono|diretor[a]?)\b/i,
   /\b(vers[aã]o mais recente|vers[aã]o atual|ainda existe|ainda funciona|ainda [ée]|continua sendo)\b/i,
-  /\b(202[4-9]|203\d)\b/
+  /\b(202[4-9]|203\d)\b/,
+  // Espanhol
+  /\b(busca|buscar|investiga|averigua)\b.{0,40}\b(en )?(internet|la web|google|línea|linea)\b/i,
+  /\b(hoy|ahora mismo|actualmente|actual(?:es)?|actualizad[oa]s?|reciente(?:s|mente)?|[uú]ltim[oa]s? (?:noticias?|versi[oó]n|lanzamiento|resultado|partido)|esta semana|este mes|este a[nñ]o|ayer|ma[nñ]ana)\b/i,
+  /\b(noticias?|titulares|qu[eé] pas[oó]|lanz[oó]|anunci[oó]|precio|cotizaci[oó]n|cu[aá]nto cuesta|qui[eé]n gan[oó]|marcador|resultado del|clima en|pron[oó]stico)\b/i,
+  /\bqui[eé]n es (?:el|la) (?:actual |nuevo |nueva )?(?:presidente|presidenta|ceo|ministr[oa]|gobernador[a]?|alcalde|entrenador[a]?|papa|l[ií]der|due[nñ]o)\b/i,
+  // Inglês
+  /\b(search (?:the web|online|google)|look up|latest|today|right now|currently|this week|this year|yesterday|news|price of|stock price|who won|score of|weather in)\b/i
 ];
+
+// Rede de segurança: se a resposta sem pesquisa admitir que está desatualizada, pesquisa de novo.
+export function looksOutdated(reply = '') {
+  return /(meu conhecimento|minha base de conhecimento|data de corte|at[eé] (?:meados de |o fim de |o in[ií]cio de )?20(?:1\d|2[0-5])\b|n[aã]o tenho acesso (?:a|à) (?:informa[cç][oõ]es|internet|dados|not[ií]cias)|informa[cç][oõ]es em tempo real|mi conocimiento|fecha de corte|hasta (?:mediados de |finales de )?20(?:1\d|2[0-5])\b|no tengo acceso a (?:informaci[oó]n|internet|datos)|en tiempo real|knowledge cutoff|as of my last (?:update|training)|i don'?t have (?:real-time|access to (?:the internet|current)))/i.test(String(reply));
+}
 
 export function needsWebSearch(text = '') {
   const t = String(text).trim();
   if (!t || t.length > 2000) return false;
-  if (/\b(crie|cria|criar|gere|gerar|fa[cç]a um|monte|desenvolva|c[oó]digo|html|css|componente|fun[cç][aã]o que)\b/i.test(t) && !/\b(pesquis|busqu|procur)/i.test(t)) return false;
+  if (/\b(crie|cria|criar|gere|gerar|fa[cç]a um|monte|desenvolva|c[oó]digo|html|css|componente|fun[cç][aã]o que|crea|haz un|genera)\b/i.test(t) && !/\b(pesquis|busqu|procur|busca)/i.test(t)) return false;
   return SEARCH_HINTS.some(re => re.test(t));
 }
 

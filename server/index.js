@@ -28,7 +28,7 @@ import { extractRequirements, verifyRequirements, requirementIssues, requirement
 import { progressStream } from "./lib/progressStream.js";
 import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
 import { buildDesignBrief } from "./lib/designDirection.js";
-import { currentDateLine, needsWebSearch, webSearchAnswer } from "./lib/webSearch.js";
+import { currentDateLine, needsWebSearch, webSearchAnswer, looksOutdated } from "./lib/webSearch.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -985,6 +985,21 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       }
     }
 
+    // KIRA_WEB_SEARCH_V1: se a resposta admitir que está desatualizada ("meu conhecimento vai até 2023"), pesquisa e responde de novo.
+    if (!searchInfo && reply && !artifactFiles?.length && !imageUrl && !image?.data && !wantsArtifact && !editingArtifact && looksOutdated(reply)) {
+      console.info("[kira-search] trigger=outdated_reply");
+      try {
+        searchInfo = await webSearchAnswer({
+          message: textMessage, history, groqHistory, systemInstruction: systemPrompt(),
+          searchGemini: (systemInstruction, searchContents) => callGemini({ systemInstruction, contents: searchContents, tools: [{ google_search: {} }], timeoutMs: Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000) }),
+          searchGroq: GROQ_ENABLED ? (systemInstruction, msg, hist) => callGroqWebSearch({ systemInstruction, message: msg, history: hist }) : null,
+          onProgress: step
+        });
+        reply = searchInfo.text;
+      } catch (searchErr) {
+        console.warn("[kira-search] nova tentativa com pesquisa falhou:", searchErr.status || searchErr.message);
+      }
+    }
     if (reply && selectedProvider) console.info(`[kira-provider] selected=${selectedProvider} model=${selectedModel || "not-reported"} intent=${intentKind} complexity=${complexity}`);
     // KIRA_HTML_ARTIFACT_REPAIR_V1_INTEGRATION
     if (artifactFiles?.length) {

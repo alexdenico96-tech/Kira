@@ -51,3 +51,17 @@ test('cai para o Groq quando o Gemini falha e reporta as fases com ícones', asy
   assert.equal(done.label, '2 fontes consultadas');
   assert.deepEqual(done.extra.icons, ['valor.globo.com', 'infomoney.com.br']);
 });
+
+test('pesquisa também é acionada em espanhol e inglês', async () => {
+  const { needsWebSearch } = await mod;
+  for (const q of ['¿cuál es el precio del dólar hoy?', 'últimas noticias de Brasil', '¿quién ganó el partido ayer?', 'busca en internet el nuevo iPhone', 'latest news about OpenAI', 'who won the game yesterday?'])
+    assert.equal(needsWebSearch(q), true, q);
+  assert.equal(needsWebSearch('crea una página web en React'), false);
+});
+
+test('detecta resposta que admite estar desatualizada', async () => {
+  const { looksOutdated } = await mod;
+  assert.equal(looksOutdated('Meu conhecimento vai até 2023, então não sei.'), true);
+  assert.equal(looksOutdated('No tengo acceso a información en tiempo real.'), true);
+  assert.equal(looksOutdated('Recursão é quando uma função chama a si mesma.'), false);
+});
