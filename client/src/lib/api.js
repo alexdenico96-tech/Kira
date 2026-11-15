@@ -71,6 +71,51 @@ export const deleteAllConversations = (token) => request("/conversations", { met
 export const sendMessage = (token, message, conversationId, { image, audio, artifactId } = {}) =>
   request("/chat", { method: "POST", token, body: { message, conversationId, image, audio, artifactId } });
 
+// KIRA_PROGRESS_STREAM_V1: recebe as fases em tempo real (NDJSON) e devolve a resposta final.
+// Se o servidor responder JSON comum (versão antiga), funciona igual ao sendMessage.
+export async function sendMessageStream(token, message, conversationId, { image, audio, artifactId } = {}, onProgress) {
+  const res = await fetch(`${BASE}/chat`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/x-ndjson",
+      ...(token ? { Authorization: `Bearer ${token}` } : {})
+    },
+    body: JSON.stringify({ message, conversationId, image, audio, artifactId })
+  });
+  const type = res.headers.get("content-type") || "";
+  if (!type.includes("ndjson") || !res.body) {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Erro na requisição.");
+    return data;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  const handle = line => {
+    if (!line.trim()) return;
+    let event;
+    try { event = JSON.parse(line); } catch { return; }
+    if (event.type === "progress") onProgress?.(event);
+    else if (event.type === "result") result = event;
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let index;
+    while ((index = buffer.indexOf("\n")) >= 0) {
+      handle(buffer.slice(0, index));
+      buffer = buffer.slice(index + 1);
+    }
+  }
+  handle(buffer);
+  if (!result) throw new Error("A conexão caiu antes da resposta. Tente novamente.");
+  if (result.status >= 400) throw new Error(result.body?.error || "Erro na requisição.");
+  return result.body;
+}
+
 export const getArtifact = (token, artifactId, version) =>
   request(`/artifacts/${artifactId}${version ? `?version=${version}` : ""}`, { token });
 

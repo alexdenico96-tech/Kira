@@ -4,14 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import { FileDown, PanelsTopLeft } from "lucide-react";
 import Markdown from "./Markdown.jsx";
 import ImageGenerationAnimation from "./ImageGenerationAnimation.jsx";
+import KiraProgress, { KiraTrace } from "./KiraProgress.jsx";
 
-function Avatar() {
+function Avatar({ live = false }) {
   return (
-    <img
-      src="/logo.png"
-      alt="Kira"
-      className="w-7 h-7 shrink-0 rounded-full object-cover mt-0.5"
-    />
+    <span className={`kira-avatar mt-0.5${live ? " is-live" : ""}`}>
+      <img src="/logo.png" alt="Kira" />
+    </span>
   );
 }
 
@@ -190,6 +189,7 @@ export default function MessageThread({
   loading,
   loadingLabel,
   generatingImage = false,
+  progress,
   onOpenArtifact
 }) {
   const endRef = useRef(null);
@@ -198,13 +198,13 @@ export default function MessageThread({
     endRef.current?.scrollIntoView({
       behavior: "smooth"
     });
-  }, [messages, loading]);
+  }, [messages, loading, progress?.steps?.length]);
 
   return (
     <div className="w-full max-w-2xl mx-auto flex flex-col gap-6 py-8">
       {messages.map((m, i) =>
         m.role === "user" ? (
-          <div key={i} className="flex justify-end">
+          <div key={i} className="kira-message flex justify-end">
             <div className="max-w-[80%] flex flex-col items-end gap-1.5">
               {m.previewImage && (
                 <img
@@ -219,14 +219,14 @@ export default function MessageThread({
 )}
 
               {m.content && (
-                <div className="rounded-2xl bg-panel2 border border-line px-4 py-2.5 text-[15px] text-paper font-body whitespace-pre-wrap leading-relaxed">
+                <div className="kira-bubble-user border border-line px-4 py-2.5 text-[15px] text-paper font-body whitespace-pre-wrap leading-relaxed">
                   {m.content}
                 </div>
               )}
             </div>
           </div>
         ) : (
-          <div key={i} className="flex gap-3">
+          <div key={i} className="kira-message flex gap-3">
             <Avatar />
 
             <div className="flex-1 pt-0.5 min-w-0">
@@ -236,6 +236,7 @@ export default function MessageThread({
                 </div>
               ) : (
                 <>
+                  <KiraTrace trace={m.trace} />
                   {m.reveal ? (
                     <RevealedMarkdown content={m.content || ""} />
                   ) : (
@@ -289,24 +290,16 @@ export default function MessageThread({
 
 
 {loading && (
-  <div className="flex gap-3">
-    <Avatar />
+  <div className="kira-message flex gap-3">
+    <Avatar live />
 
-    <div className="min-w-0 flex-1">
-      {generatingImage ? (
-        <ImageGenerationAnimation />
-      ) : (
-        <div className="pt-2">
-          <KiraVoiceWave
-  mode="processing"
-  label={
-    loadingLabel
-      ? loadingLabel.toUpperCase()
-      : "KIRA ESTÁ PROCESSANDO"
-  }
-/>
-        </div>
-      )}
+    <div className="min-w-0 flex-1 flex flex-col gap-3">
+      {generatingImage && <ImageGenerationAnimation compact />}
+      <KiraProgress
+        steps={progress?.steps || []}
+        mode={progress?.mode || "chat"}
+        startedAt={progress?.startedAt || Date.now()}
+      />
     </div>
   </div>
 )}

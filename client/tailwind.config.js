@@ -21,9 +21,13 @@ export default {
         mono: ["'JetBrains Mono'", "monospace"]
       },
       borderRadius: {
-        sm: "6px",
-        DEFAULT: "10px",
-        lg: "14px"
+        sm: "8px",
+        DEFAULT: "12px",
+        md: "12px",
+        lg: "16px",
+        xl: "18px",
+        "2xl": "22px",
+        "3xl": "28px"
       }
     }
   },

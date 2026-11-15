@@ -86,7 +86,7 @@ export default function Sidebar({
               ? "relative w-[72px]"
               : "relative w-[272px]",
           "shrink-0 flex h-full flex-col overflow-hidden",
-          "border-r border-line bg-panel/95 backdrop-blur-xl",
+          "kira-panel",
           "transition-[width] duration-300 ease-in-out"
         ].join(" ")}
       >

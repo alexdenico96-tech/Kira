@@ -2,7 +2,7 @@
 import { useMemo } from "react";
 import { Sparkles } from "lucide-react";
 
-export default function ImageGenerationAnimation() {
+export default function ImageGenerationAnimation({ compact = false }) {
   const particles = useMemo(
     () =>
       Array.from({ length: 48 }, (_, i) => ({
@@ -20,7 +20,7 @@ export default function ImageGenerationAnimation() {
     <div
       role="status"
       aria-label="Kira está gerando sua imagem"
-      className="relative mt-3 w-full max-w-md overflow-hidden rounded-2xl border border-neon/20 bg-panel2"
+      className="kira-glow-border relative w-full max-w-md overflow-hidden rounded-[22px] border border-neon/20 bg-panel2"
     >
       <div className="relative flex h-64 items-center justify-center overflow-hidden">
         <div className="absolute h-40 w-40 rounded-full bg-neon/10 blur-3xl animate-pulse" />
@@ -47,7 +47,7 @@ export default function ImageGenerationAnimation() {
         </div>
       </div>
 
-      <div className="border-t border-line px-4 py-3">
+      {!compact && <div className="border-t border-line px-4 py-3">
         <div className="flex items-center gap-2">
           <Sparkles size={15} className="text-neon" />
           <span className="text-sm font-medium text-paper">
@@ -60,7 +60,7 @@ export default function ImageGenerationAnimation() {
         <div className="mt-3 h-1 overflow-hidden rounded-full bg-neon/10">
           <div className="h-full w-1/3 rounded-full bg-neon animate-[kiraProgress_2s_ease-in-out_infinite]" />
         </div>
-      </div>
+      </div>}
     </div>
   );
 }

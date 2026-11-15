@@ -25,6 +25,9 @@ import { inspectVisualQuality, repairImageSources } from "./lib/visualQuality.js
 import { designEditGuidance } from "./lib/designDirection.js";
 import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImageId } from "./lib/projectImages.js";
 import { extractRequirements, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
+import { progressStream } from "./lib/progressStream.js";
+import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
+import { buildDesignBrief } from "./lib/designDirection.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -177,6 +180,15 @@ Não remova funcionalidades existentes, não troque a stack e não reescreva arq
 function requirementsNote(check) {
   if (!check?.missing?.length) return "";
   return `\n\nAtenção: não consegui confirmar no código ${check.missing.length === 1 ? "este item" : "estes itens"} do seu pedido — me diga se quer que eu ajuste:\n${check.missing.slice(0, 6).map(r => `- ${r.text}`).join("\n")}`;
+}
+
+// Conferência visual das imagens geradas (Gemini com visão).
+async function askVisionModel(prompt, bytes, mimeType) {
+  const data = await callGemini({
+    systemInstruction: "Você avalia imagens geradas por IA e responde somente JSON válido.",
+    contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType, data: Buffer.from(bytes).toString("base64") } }] }]
+  });
+  return (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join("\n");
 }
 
 async function askRequirementsModel(prompt) {
@@ -517,7 +529,8 @@ function kiraWantsGeneratedImage(value) {
 
 // ---------- Chat (Kira) ----------
 
-app.post("/api/chat", requireAuth, async (req, res) => {
+app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
+  const step = req.progress; // KIRA_PROGRESS_STREAM_V1: fases visíveis no chat
   const chatStartedAt = Date.now();
   res.once("finish", () => console.info(`[kira-chat] status=${res.statusCode} duration_ms=${Date.now()-chatStartedAt}`));
   try {
@@ -538,7 +551,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
     if (audio?.data) {
       try {
+        step('listen', 'Transcrevendo o áudio');
         const transcript = await transcribeAudio(audio);
+        step('listen', 'Áudio transcrito', '', 'done');
         textMessage = [message, transcript].filter(Boolean).join("\n");
         console.info(`[kira-audio] transcribed chars=${transcript.length}`);
       } catch (audioError) {
@@ -564,7 +579,16 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const mentioned = message ? await findProjectMention(req.user.id, message) : null;
     const resolvedArtifactId = artifactId || mentioned?.id || active?.artifactId || null;
     const existingArtifact = resolvedArtifactId ? await getArtifact(req.user.id, resolvedArtifactId) : null;
-    const {kind: intentKind, editingArtifact, wantsArtifact} = classifyKiraIntent(textMessage, Boolean(existingArtifact));
+    const {kind: rawIntentKind, editingArtifact: rawEditingArtifact, wantsArtifact: rawWantsArtifact} = classifyKiraIntent(textMessage, Boolean(existingArtifact));
+    // KIRA_IMAGE_FIDELITY_V1: "agora deixe o céu roxo" logo após uma imagem é ajuste da imagem, não do projeto.
+    const recentAssistant = [...(conv.messages || [])].slice(-4).reverse().find(m => m.role === "assistant");
+    const previousImageUrl = recentAssistant?.imageUrl || null;
+    const imageFollowUp = Boolean(!image?.data && previousImageUrl && isImageEditFollowUp(textMessage));
+    const referenceImageEdit = Boolean(image?.data && isReferenceImageRequest(textMessage));
+    const wantsImage = imageFollowUp || referenceImageEdit || (!image?.data && kiraWantsGeneratedImage(textMessage));
+    const editingArtifact = rawEditingArtifact && !imageFollowUp;
+    const wantsArtifact = rawWantsArtifact && !imageFollowUp;
+    const intentKind = wantsImage ? "image" : rawIntentKind;
     console.info(`[kira-intent] kind=${intentKind}`);
     const complexity = classifyKiraComplexity(textMessage, intentKind);
     console.info(`[kira-complexity] level=${complexity} path=${complexity==="advanced"?"groq-first":complexity==="project"?"workspace":"fast-chat"}`);
@@ -597,7 +621,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     let requirements = []; // checklist de fidelidade (também usado no fallback Groq)
     const withProjectImages = async files => {
       const result = await rewriteProjectImages(files, publicBaseUrl(req));
-      if (result.ids.length) { console.info(`[kira-project-image] queued=${result.ids.length}`); warmProjectImages(result.ids); }
+      if (result.ids.length) { console.info(`[kira-project-image] queued=${result.ids.length}`); warmProjectImages(result.ids); step('images', `Preparando ${result.ids.length} imagens do projeto`, 'geradas em segundo plano', 'done'); }
       return result.files;
     };
     let usedFallback = false;
@@ -607,13 +631,38 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     try {
       // KIRA_MULTIMODAL_V2: gerar imagem sem depender de function calling do modelo textual.
       // Preserva todas as rotas anteriores para os demais pedidos.
-      if (!image?.data && !editingArtifact && kiraWantsGeneratedImage(textMessage)) {
-        const visualPrompt = /\b(realista|hiperrealista|fotorealista|fotogr[aá]fic[ao]|photorealistic|realistic)\b/i.test(textMessage)
-          ? textMessage + '. Photorealistic image, natural physically plausible lighting, realistic materials and proportions, coherent anatomy and perspective, faithful subject and composition, no unrelated elements.'
-          : textMessage;
-        imageUrl = await generateKiraImage(visualPrompt);
-        reply = 'Aqui está a imagem solicitada.';
-        console.info('[kira-image] direct_generation=1');
+      if (wantsImage && !editingArtifact) {
+        let previous = null;
+        if (imageFollowUp) {
+          previous = await readImageMeta(previousImageUrl);
+          if (!previous) {
+            // Sem metadados (ex.: imagem anterior a esta versão): usa o pedido que gerou a imagem.
+            const msgs = conv.messages || [];
+            const idx = msgs.lastIndexOf(recentAssistant);
+            previous = { request: msgs.slice(0, idx).reverse().find(m => m.role === "user")?.content || "" };
+          }
+        }
+        const reference = referenceImageEdit && image?.reference?.data
+          ? { bytes: Buffer.from(image.reference.data, "base64"), mimeType: image.reference.mimeType || "image/jpeg" }
+          : null;
+        const result = await createFaithfulImage({
+          request: textMessage, previous, reference,
+          ask: askRequirementsModel, askVision: askVisionModel,
+          generate: generateKiraImage, onProgress: step
+        });
+        imageUrl = result.url;
+        const v = result.verification;
+        reply = previous ? "Pronto, ajustei a imagem." : reference ? "Aqui está a sua foto transformada." : "Aqui está a imagem solicitada.";
+        if (v && v.score < Number(process.env.KIRA_IMAGE_MIN_SCORE || 8) && v.missing.length) {
+          reply += `\n\nConferi a imagem e estes detalhes podem não ter saído como você pediu: ${v.missing.slice(0, 4).join("; ")}. Quer que eu tente de novo?`;
+        }
+        console.info(`[kira-image] fidelity attempts=${result.attempts} score=${v?.score ?? "n/a"} edit=${Boolean(previous)} reference=${Boolean(reference)}`);
+      }
+      if (!reply) {
+        if (wantsArtifact) step('understand', 'Entendendo o pedido');
+        else if (editingArtifact) step('read', 'Lendo os arquivos do projeto', existingArtifact?.name || '');
+        else if (image?.data) step('look', 'Analisando a imagem');
+        else step('think', 'Pensando na resposta');
       }
       if(!reply && complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && (route.task==="chat_small" || route.task==="chat")){
         try{
@@ -636,7 +685,13 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         const extracted = await extractRequirements(textMessage, askRequirementsModel);
         requirements = extracted.requirements;
         console.info(`[kira-requirements] source=${extracted.source} count=${requirements.length}`);
-      }
+        step('understand', `Checklist com ${requirements.length} requisitos`, requirements.slice(0, 3).map(r => r.text).join(' · '), 'done');
+      } else if (wantsArtifact && !reply) step('understand', 'Pedido entendido', '', 'done');
+      if (wantsArtifact && !reply) {
+        const brief = buildDesignBrief(textMessage);
+        step('design', 'Direção visual definida', `${brief.domain} · ${brief.fonts.display} + ${brief.fonts.body}`, 'done');
+        step('build', 'Construindo o projeto', 'escrevendo os arquivos');
+      } else if (editingArtifact && !reply) step('edit', 'Aplicando as alterações');
       const projectPrompt = (issues=[]) => isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,issues,requirements) : artifactQualityPrompt(textMessage,issues);
       const aiContents = editingArtifact
         ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }, ...referenceParts] }]
@@ -673,8 +728,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
       if (functionCall?.name === "generate_image") {
         const prompt = functionCall.args?.prompt || textMessage;
-        imageUrl = await generateKiraImage(prompt);
-        reply = `Aqui está a imagem que você pediu:\n\n*"${prompt}"*`;
+        const result = await createFaithfulImage({ request: prompt, ask: askRequirementsModel, askVision: askVisionModel, generate: generateKiraImage, onProgress: step });
+        imageUrl = result.url;
+        reply = "Aqui está a imagem que você pediu.";
             } else if (functionCall?.name === "update_artifact" && editingArtifact) {
         const args=functionCall.args||{};
         const changes=Array.isArray(args.changes)?args.changes:[];
@@ -683,6 +739,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         const normalized=repairGeneratedHtml(applied.files);
         const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,await withProjectImages(normalized.files),args.summary||textMessage.slice(0,160),applied.manifest);
         artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
+        step('edit', 'Alterações aplicadas', `${applied.manifest.created.length+applied.manifest.updated.length+applied.manifest.deleted.length} arquivo(s) · v${artifactVersion}`, 'done');
         reply=`Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
       } else if (functionCall?.name === "create_document") {
         const parseArtifactArgs = (args={}) => ({
@@ -716,6 +773,12 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         const projectName=parsed.name;
         let best=evaluate(normalizeFiles(parsed.files),functionCall.args?.coverage);
         logEval("attempt=1",best);
+        step('build', 'Fase 1 finalizada', `${best.files.length} arquivos gerados`, 'done');
+        step('verify', 'Verificando requisitos e código');
+        const verifyDetail=e=>`${e.req.total?`${e.req.covered}/${e.req.total} requisitos · `:''}${e.structural.length} erro(s) · visual ${e.visual.score}/100`;
+        step('verify', 'Verificação concluída', verifyDetail(best), 'done');
+        const hadFixPhase=best.issues.length>0;
+        if(hadFixPhase) step('fix', `Fase 2 · ajustando ${best.issues.length} ponto(s)`);
 
         // Tentativa 2: projeto cortado ou sem arquivos essenciais → regenera inteiro; senão → correção cirúrgica,
         // que mantém o que já está certo e só reescreve/cria os arquivos com problema.
@@ -747,6 +810,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
           }
         }
 
+        if(hadFixPhase) step('fix', 'Fase 2 finalizada', verifyDetail(best), 'done');
         if(best.structural.length){
           const e=new Error(`Artifact reprovado no Developer Agent: ${best.structural.join("; ")}`);
           e.code="artifact_quality_failed";
@@ -770,7 +834,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     } catch (err) {
       console.error(`[chat] Gemini falhou (status ${err.status}, code ${err.code}):`, err.message);
       // Não anunciar uma imagem que não foi gerada.
-      if (!image?.data && kiraWantsGeneratedImage(textMessage)) {
+      if (wantsImage) {
         console.warn("[kira-image] generation_failed:", err.message);
         return res.status(502).json({
           error: "Não consegui gerar a imagem agora. Tente novamente."
@@ -917,6 +981,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         reply = artifactSuccessReply(artifactFiles);
       }
     }
+    if (artifactFiles?.length) step('quality', 'Validação final de sintaxe e qualidade');
     // Quality Gate: valida o resultado FINAL, após os reparos e antes da persistência.
     if (artifactFiles?.length) {
       try {
@@ -977,6 +1042,7 @@ if (syntax.issues.length) {
 }
       } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); return res.status(422).json({ error: "Projeto não salvo: não foi possível verificar a sintaxe." }); }
     }
+    if (artifactFiles?.length) step('quality', 'Validação final concluída', '', 'done');
     if (fidelityNote && artifactFiles?.length) reply += fidelityNote;
     if (artifactFiles?.length && !responseArtifactId) {
       artifactFiles = await withProjectImages(artifactFiles);
@@ -989,6 +1055,8 @@ if (syntax.issues.length) {
     }
 
     if(responseArtifactId) await setActiveProject(req.user.id,conv.id,responseArtifactId);
+    if (artifactFiles?.length) step('save', responseArtifactId ? `Projeto pronto · v${artifactVersion || 1}` : 'Projeto pronto', '', 'done');
+    else if (!imageUrl) step('think', 'Resposta pronta', '', 'done');
     const hadAttachment = Boolean(image?.data || audio?.data);
 
     await appendMessages(req.user.id, conv.id, [

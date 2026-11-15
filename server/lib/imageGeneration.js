@@ -160,7 +160,7 @@ function getCloudflareAccountOrder(ids) {
   return order;
 }
 
-async function generateCloudflareImage(prompt, layout) {
+async function generateCloudflareImage(prompt, layout, options = {}) {
   const ids = splitCredentials(
     process.env.CLOUDFLARE_ACCOUNT_IDS || process.env.CLOUDFLARE_ACCOUNT_ID
   );
@@ -205,6 +205,17 @@ async function generateCloudflareImage(prompt, layout) {
       form.append("prompt", prompt);
       form.append("width", String(layout.width));
       form.append("height", String(layout.height));
+      // KIRA_IMAGE_FIDELITY_V1: seed mantém a composição em edições; guidance aproxima do prompt;
+      // input_image_0 permite editar/estilizar uma foto enviada (precisa ser < 512x512).
+      if (Number.isFinite(options.seed)) form.append("seed", String(options.seed));
+      if (Number.isFinite(options.guidance)) form.append("guidance", String(options.guidance));
+      if (options.referenceImage?.bytes) {
+        form.append(
+          "input_image_0",
+          new Blob([options.referenceImage.bytes], { type: options.referenceImage.mimeType || "image/jpeg" }),
+          "reference.jpg"
+        );
+      }
 
       const url =
         "https://api.cloudflare.com/client/v4/accounts/" +
@@ -296,7 +307,7 @@ async function generateCloudflareImage(prompt, layout) {
   throw lastError || new Error("Cloudflare indisponível.");
 }
 
-export async function generateKiraImage(prompt) {
+export async function generateKiraImage(prompt, options = {}) {
   const text = String(prompt || "").trim();
 
   if (!text) {
@@ -306,6 +317,17 @@ export async function generateKiraImage(prompt) {
   const cleanPrompt = text
     .replace(/^(crie|cria|criar|gere|gera|gerar|desenhe|desenha|faça)\s+(uma?\s+)?(imagem|foto|ilustração|retrato)\s+(de|do|da|mostrando|com)?\s*/i, "")
     .trim();
+
+  // Prompt já planejado pela camada de fidelidade: vai direto ao modelo, sem o envelope genérico.
+  if (options.plannedPrompt) {
+    const plannedLayout = options.layout || detectImageLayout(cleanPrompt);
+    try {
+      return await generateCloudflareImage(options.plannedPrompt, plannedLayout, options);
+    } catch (error) {
+      console.warn("[kira-image] cloudflare unavailable (planned); using pollinations:", error.message);
+      return savePollinationsImage(options.plannedPrompt);
+    }
+  }
 
   const layout = detectImageLayout(cleanPrompt);
   const style = detectImageStyle(cleanPrompt);
@@ -394,3 +416,17 @@ cleanPrompt,
   return `/api/generated-images/${filename}`;
 }
 
+
+// Reserva Pollinations para prompts planejados (mesmo formato de arquivo da geração normal).
+async function savePollinationsImage(prompt) {
+  const response = await fetch(buildPollinationsUrl(prompt), { signal: AbortSignal.timeout(120000) });
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok || !contentType.startsWith("image/")) throw new Error(`Pollinations retornou HTTP ${response.status}.`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length < 100) throw new Error("A imagem recebida está vazia ou incompleta.");
+  const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+  await fs.mkdir(imageDir, { recursive: true });
+  const filename = `${randomUUID()}.${extension}`;
+  await fs.writeFile(path.join(imageDir, filename), bytes);
+  return `/api/generated-images/${filename}`;
+}

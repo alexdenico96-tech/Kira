@@ -1,0 +1,448 @@
+/* KIRA — Motion UI
+   Luzes fluidas de fundo, bordas de luz animadas, painéis arredondados e a linha do tempo de fases. */
+
+@property --kira-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+:root,
+html[data-theme="dark"] {
+  --kira-radius-panel: 26px;
+  --kira-light-1: #3b82f6;
+  --kira-light-2: #8b5cf6;
+  --kira-light-3: #22d3ee;
+  --kira-aurora-opacity: .30;
+  --kira-panel-glass: color-mix(in srgb, var(--kira-panel) 62%, transparent);
+}
+
+html[data-theme="light"],
+html.light {
+  --kira-light-1: #60a5fa;
+  --kira-light-2: #a78bfa;
+  --kira-light-3: #67e8f9;
+  --kira-aurora-opacity: .22;
+  --kira-panel-glass: color-mix(in srgb, var(--kira-panel) 78%, transparent);
+}
+
+/* ---------- LUZES DE FUNDO ---------- */
+
+.kira-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.kira-aurora__blob {
+  position: absolute;
+  width: 58vmax;
+  height: 58vmax;
+  border-radius: 50%;
+  filter: blur(90px);
+  opacity: var(--kira-aurora-opacity);
+  will-change: transform;
+  transition: opacity 1.2s ease;
+}
+
+.kira-aurora__blob--1 {
+  top: -24vmax;
+  left: -14vmax;
+  background: radial-gradient(circle at 35% 35%, var(--kira-light-1), transparent 62%);
+  animation: kiraDrift1 26s ease-in-out infinite alternate;
+}
+
+.kira-aurora__blob--2 {
+  top: 6vmax;
+  right: -22vmax;
+  background: radial-gradient(circle at 50% 50%, var(--kira-light-2), transparent 62%);
+  animation: kiraDrift2 32s ease-in-out infinite alternate;
+}
+
+.kira-aurora__blob--3 {
+  bottom: -30vmax;
+  left: 18vmax;
+  background: radial-gradient(circle at 50% 50%, var(--kira-light-3), transparent 60%);
+  animation: kiraDrift3 38s ease-in-out infinite alternate;
+}
+
+/* Feixe de luz que gira devagar enquanto a Kira trabalha. */
+.kira-aurora__beam {
+  position: absolute;
+  inset: -60%;
+  background: conic-gradient(
+    from var(--kira-angle),
+    transparent 0deg,
+    color-mix(in srgb, var(--kira-light-1) 16%, transparent) 40deg,
+    transparent 90deg,
+    transparent 180deg,
+    color-mix(in srgb, var(--kira-light-2) 14%, transparent) 230deg,
+    transparent 280deg
+  );
+  filter: blur(40px);
+  opacity: 0;
+  transition: opacity 1s ease;
+  animation: kiraAngle 16s linear infinite;
+}
+
+.kira-aurora.is-busy .kira-aurora__beam { opacity: 1; }
+.kira-aurora.is-busy .kira-aurora__blob { opacity: calc(var(--kira-aurora-opacity) + .12); }
+
+@keyframes kiraDrift1 {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(16vw, 10vh, 0) scale(1.15); }
+  100% { transform: translate3d(-4vw, 22vh, 0) scale(.92); }
+}
+
+@keyframes kiraDrift2 {
+  0% { transform: translate3d(0, 0, 0) scale(1.05); }
+  50% { transform: translate3d(-18vw, 14vh, 0) scale(.9); }
+  100% { transform: translate3d(-6vw, -10vh, 0) scale(1.12); }
+}
+
+@keyframes kiraDrift3 {
+  0% { transform: translate3d(0, 0, 0) scale(.95); }
+  50% { transform: translate3d(14vw, -16vh, 0) scale(1.1); }
+  100% { transform: translate3d(-12vw, -6vh, 0) scale(1); }
+}
+
+@keyframes kiraAngle { to { --kira-angle: 360deg; } }
+
+/* ---------- PAINÉIS ARREDONDADOS ---------- */
+
+.kira-shell {
+  padding: 10px;
+  gap: 10px;
+}
+
+.kira-panel {
+  border-radius: var(--kira-radius-panel);
+  border: 1px solid var(--kira-line) !important;
+  background: var(--kira-panel-glass) !important;
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, #fff 6%, transparent) inset,
+    0 24px 60px -32px var(--kira-shadow);
+  overflow: hidden;
+}
+
+@media (max-width: 1023px) {
+  .kira-shell { padding: 0; gap: 0; }
+  .kira-panel.kira-panel--main { border-radius: 0; border: 0 !important; }
+  .artifact-workspace.kira-panel { border-radius: 0; }
+  aside.kira-panel { border-radius: 0 24px 24px 0; }
+}
+
+/* ---------- BORDA DE LUZ ANIMADA ---------- */
+
+.kira-glow-border {
+  position: relative;
+  isolation: isolate;
+}
+
+.kira-glow-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--kira-angle),
+    transparent 0%,
+    var(--kira-light-1) 18%,
+    var(--kira-light-2) 32%,
+    var(--kira-light-3) 46%,
+    transparent 62%,
+    transparent 100%
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: kiraAngle 3.2s linear infinite;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.kira-glow-border::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 34px -6px color-mix(in srgb, var(--kira-light-1) 45%, transparent);
+  animation: kiraBreath 2.6s ease-in-out infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+
+@keyframes kiraBreath {
+  0%, 100% { opacity: .35; }
+  50% { opacity: 1; }
+}
+
+/* Campo de mensagem: brilho suave ao focar. */
+.kira-input:focus-within {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--kira-accent) 35%, transparent),
+    0 18px 50px -20px color-mix(in srgb, var(--kira-light-1) 55%, transparent) !important;
+}
+
+/* ---------- AVATAR VIVO ---------- */
+
+.kira-avatar {
+  position: relative;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+}
+
+.kira-avatar img {
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  object-fit: cover;
+  position: relative;
+  z-index: 1;
+}
+
+.kira-avatar.is-live::before {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  background: conic-gradient(from var(--kira-angle), var(--kira-light-1), var(--kira-light-2), var(--kira-light-3), var(--kira-light-1));
+  animation: kiraAngle 1.6s linear infinite;
+}
+
+.kira-avatar.is-live::after {
+  content: "";
+  position: absolute;
+  inset: -10px;
+  border-radius: inherit;
+  background: radial-gradient(circle, color-mix(in srgb, var(--kira-light-1) 45%, transparent), transparent 70%);
+  animation: kiraBreath 2s ease-in-out infinite;
+  z-index: -1;
+}
+
+/* ---------- LINHA DO TEMPO DE FASES ---------- */
+
+.kira-progress {
+  border-radius: 22px;
+  border: 1px solid var(--kira-line);
+  background: var(--kira-panel-glass);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  padding: 16px 18px 14px;
+  max-width: 520px;
+}
+
+.kira-progress__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.kira-progress__orb {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 35% 35%, #fff, var(--kira-light-1) 45%, var(--kira-light-2));
+  box-shadow: 0 0 18px var(--kira-light-1);
+  animation: kiraOrb 2.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes kiraOrb {
+  0%, 100% { transform: scale(.85); box-shadow: 0 0 10px var(--kira-light-1); }
+  50% { transform: scale(1.1); box-shadow: 0 0 26px var(--kira-light-2); }
+}
+
+.kira-progress__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--kira-text);
+  letter-spacing: -.01em;
+}
+
+.kira-progress__meta {
+  font-size: 11px;
+  color: var(--kira-muted);
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 1px;
+}
+
+.kira-steps {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.kira-steps::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: linear-gradient(to bottom, var(--kira-line), transparent);
+}
+
+.kira-step {
+  position: relative;
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  animation: kiraStepIn .45s cubic-bezier(.2, .8, .2, 1) both;
+}
+
+@keyframes kiraStepIn {
+  from { opacity: 0; transform: translateY(6px); filter: blur(3px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+
+.kira-step__icon {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  background: var(--kira-panel);
+}
+
+.kira-step--done .kira-step__icon {
+  background: linear-gradient(135deg, #10b981, #22d3ee);
+  color: #04131a;
+  animation: kiraPop .4s cubic-bezier(.3, 1.6, .5, 1) both;
+}
+
+@keyframes kiraPop {
+  from { transform: scale(.4); }
+  to { transform: scale(1); }
+}
+
+.kira-step__spinner {
+  width: 19px;
+  height: 19px;
+  border-radius: 999px;
+  background: conic-gradient(from var(--kira-angle), transparent 0 25%, var(--kira-light-1), var(--kira-light-2));
+  -webkit-mask: radial-gradient(circle, transparent 5.5px, #000 6px);
+  mask: radial-gradient(circle, transparent 5.5px, #000 6px);
+  animation: kiraAngle 1s linear infinite;
+}
+
+.kira-step__label {
+  font-size: 13.5px;
+  line-height: 1.35;
+  color: var(--kira-text);
+}
+
+.kira-step--done .kira-step__label { color: color-mix(in srgb, var(--kira-text) 78%, transparent); }
+
+.kira-step--active .kira-step__label {
+  background: linear-gradient(90deg, var(--kira-muted) 0%, var(--kira-text) 45%, var(--kira-light-3) 55%, var(--kira-muted) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: kiraShimmer 2.2s linear infinite;
+  font-weight: 500;
+}
+
+@keyframes kiraShimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -150% 0; }
+}
+
+.kira-step__detail {
+  font-size: 11.5px;
+  color: var(--kira-muted);
+  margin-top: 2px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.kira-progress__bar {
+  position: relative;
+  height: 3px;
+  margin-top: 14px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--kira-light-1) 12%, transparent);
+}
+
+.kira-progress__bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--kira-light-1), var(--kira-light-2), transparent);
+  animation: kiraSweep 1.6s cubic-bezier(.45, 0, .2, 1) infinite;
+}
+
+@keyframes kiraSweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(260%); }
+}
+
+/* Resumo das fases preso à resposta. */
+.kira-trace {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 5px 11px 5px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--kira-line);
+  background: color-mix(in srgb, var(--kira-panel2) 70%, transparent);
+  font-size: 11.5px;
+  color: var(--kira-muted);
+}
+
+.kira-trace:hover { color: var(--kira-text); border-color: color-mix(in srgb, var(--kira-accent2) 45%, transparent); }
+
+.kira-trace__check {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #10b981, #22d3ee);
+  color: #04131a;
+}
+
+/* Mensagens entram com suavidade. */
+.kira-message { animation: kiraFadeIn .45s cubic-bezier(.2, .8, .2, 1) both; }
+
+.kira-bubble-user {
+  border-radius: 22px 22px 6px 22px !important;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--kira-accent) 22%, var(--kira-panel2)), var(--kira-panel2)) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kira-aurora__blob,
+  .kira-aurora__beam,
+  .kira-glow-border::before,
+  .kira-glow-border::after,
+  .kira-avatar.is-live::before,
+  .kira-avatar.is-live::after,
+  .kira-progress__orb,
+  .kira-step,
+  .kira-step__spinner,
+  .kira-step--active .kira-step__label,
+  .kira-progress__bar > span,
+  .kira-message {
+    animation: none !important;
+  }
+}

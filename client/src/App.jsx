@@ -1,6 +1,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import "./styles/KiraMidnight.css";
+import "./styles/KiraMotion.css";
 
 import InputBar from "./components/InputBar.jsx";
 import MessageThread from "./components/MessageThread.jsx";
@@ -8,6 +9,8 @@ import Sidebar from "./components/Sidebar.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import SettingsModal from "./components/SettingsModal.jsx";
 import ArtifactWorkspace from "./components/ArtifactWorkspace.jsx";
+import KiraAurora from "./components/KiraAurora.jsx";
+import { mergeProgress, modeFromStep } from "./components/KiraProgress.jsx";
 
 import { useTheme } from "./lib/useTheme.js";
 
@@ -16,7 +19,7 @@ import {
   clearSession,
   listConversations,
   getConversation,
-  sendMessage,
+  sendMessageStream,
   deleteConversation,
   deleteAllConversations
 } from "./lib/api.js";
@@ -64,6 +67,8 @@ export default function App() {
 
   const [loadingLabel, setLoadingLabel] = useState("pensando…");
   const [generatingImage, setGeneratingImage] = useState(false);
+  // Fases em tempo real enviadas pelo servidor (construindo, fase 1 finalizada...).
+  const [progress, setProgress] = useState({ steps: [], mode: "chat", startedAt: 0 });
 
   const [error, setError] = useState(null);
   const [activeArtifact, setActiveArtifact] = useState(null);
@@ -212,9 +217,13 @@ export default function App() {
     );
 
     setLoading(true);
+    const startedAt = Date.now();
+    let liveSteps = [];
+    let liveMode = shouldAnimateImage ? "image" : image ? "vision" : audio ? "audio" : "chat";
+    setProgress({ steps: [], startedAt, mode: liveMode });
 
     try {
-      const res = await sendMessage(
+      const res = await sendMessageStream(
         session.token,
         value,
         activeId,
@@ -222,8 +231,20 @@ export default function App() {
           image,
           audio,
           artifactId: activeArtifact?.id || null
+        },
+        (event) => {
+          liveSteps = mergeProgress(liveSteps, event);
+          liveMode = modeFromStep(event.id, liveMode);
+          if (liveMode === "image") setGeneratingImage(true);
+          setProgress({ steps: liveSteps, mode: liveMode, startedAt });
         }
       );
+      const trace = liveSteps.length
+        ? {
+            steps: liveSteps.map((step) => ({ ...step, state: "done" })),
+            seconds: Math.max(1, Math.round((Date.now() - startedAt) / 1000))
+          }
+        : null;
 
       setActiveId(res.conversationId);
 
@@ -239,7 +260,8 @@ export default function App() {
           artifactName: res.artifactName,
           artifactFiles: res.artifactFiles,
           artifactId: res.artifactId,
-          artifactVersion: res.artifactVersion
+          artifactVersion: res.artifactVersion,
+          trace
         }
       ]);
 
@@ -274,6 +296,7 @@ export default function App() {
       setLoading(false);
       setGeneratingImage(false);
       setLoadingLabel("pensando…");
+      setProgress((current) => ({ ...current, steps: [] }));
     }
   }
 
@@ -288,7 +311,8 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen flex overflow-hidden">
+    <div className="kira-shell h-[100dvh] flex overflow-hidden">
+      <KiraAurora busy={loading} />
       <Sidebar
         conversations={conversations}
         activeId={activeId}
@@ -309,8 +333,8 @@ export default function App() {
         token={session.token}
       />
 
-      <div className="flex-1 flex min-w-0">
-        <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex min-w-0 gap-2.5">
+        <div className="kira-panel kira-panel--main flex-1 flex flex-col min-w-0">
           {!started ? (
             <main className="flex-1 flex flex-col items-center justify-center px-4 gap-8 -mt-16">
               <h1 className="float-slow font-display font-semibold text-3xl md:text-4xl text-paper text-center tracking-tight">
@@ -331,7 +355,7 @@ export default function App() {
                     key={s}
                     type="button"
                     onClick={() => handleSubmit(s)}
-                    className="text-xs font-body text-mist border border-line rounded-full px-3.5 py-2 hover:border-neon/50 hover:text-paper transition-colors"
+                    className="kira-message text-xs font-body text-mist border border-line bg-panel2/50 backdrop-blur rounded-full px-4 py-2 hover:border-neon/50 hover:text-paper hover:-translate-y-0.5 transition-all"
                   >
                     {s}
                   </button>
@@ -346,6 +370,7 @@ export default function App() {
                   loading={loading}
                   loadingLabel={loadingLabel}
                   generatingImage={generatingImage}
+                  progress={progress}
                   onOpenArtifact={setActiveArtifact}
                 />
               </main>

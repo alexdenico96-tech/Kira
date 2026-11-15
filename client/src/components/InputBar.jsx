@@ -32,6 +32,22 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     }
   }
 
+  // Cópia reduzida (≤ 504px) usada como referência pelo modelo de imagem ao editar/estilizar a foto.
+  async function makeReference(file) {
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 504 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.9));
+      return blob ? { data: await fileToBase64(blob), mimeType: "image/jpeg" } : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function handleImageSelect(e) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -41,10 +57,10 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
       return;
     }
     try {
-      const base64 = await fileToBase64(file);
+      const [base64, reference] = await Promise.all([fileToBase64(file), makeReference(file)]);
       setPendingImage(previous => {
         if (previous?.previewUrl) URL.revokeObjectURL(previous.previewUrl);
-        return { base64, mimeType: file.type, previewUrl: URL.createObjectURL(file), name: file.name };
+        return { base64, reference, mimeType: file.type, previewUrl: URL.createObjectURL(file), name: file.name };
       });
       setError(null);
     } catch {
@@ -118,7 +134,7 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     if (audio) setAudioProcessing(true);
     try {
       const sent = await onSubmit(text, {
-        image: image ? { data: image.base64, mimeType: image.mimeType } : undefined,
+        image: image ? { data: image.base64, mimeType: image.mimeType, ...(image.reference ? { reference: image.reference } : {}) } : undefined,
         audio: audio ? { data: audio.base64, mimeType: audio.mimeType } : undefined,
         audioPreviewUrl: audio?.previewUrl
       });
@@ -162,7 +178,7 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
           {error && <p role="alert" className="text-xs text-coral">{error}</p>}
         </div>
       )}
-      <div className="group overflow-hidden rounded-[22px] border border-line bg-panel shadow-xl shadow-black/20 transition-all duration-300 focus-within:border-neon/50 focus-within:shadow-[0_0_30px_rgba(59,130,246,0.08)]">
+      <div className={["kira-input group overflow-hidden rounded-[26px] border border-line bg-panel shadow-xl shadow-black/20 transition-all duration-300 focus-within:border-neon/50", loading ? "kira-glow-border" : ""].join(" ")}>
         <div className="px-4 pb-1 pt-4">
           <textarea ref={textareaRef} rows={1} value={value} onChange={e => onChange(e.target.value)} onKeyDown={handleKeyDown} placeholder="Pergunte ou peça algo à Kira..." aria-label="Mensagem para Kira" className="block max-h-40 min-h-[38px] w-full resize-none border-0 bg-transparent p-0 text-[15px] leading-relaxed text-paper outline-none shadow-none placeholder:text-mist focus:border-0 focus:outline-none focus:ring-0" style={{ WebkitAppearance: "none", boxShadow: "none" }} />
         </div>
