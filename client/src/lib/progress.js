@@ -5,7 +5,7 @@ export function mergeProgress(steps, event) {
     step.id !== event.id && step.state === "active" ? { ...step, state: "done" } : step
   );
   const index = next.findIndex(step => step.id === event.id);
-  const item = { id: event.id, label: event.label, detail: event.detail || "", state: event.state || "active" };
+  const item = { id: event.id, label: event.label, detail: event.detail || "", state: event.state || "active", ...(event.icons?.length ? { icons: event.icons } : {}) };
   if (index >= 0) next[index] = { ...next[index], ...item };
   else next.push(item);
   return next;
@@ -16,6 +16,7 @@ export function modeFromStep(id, current) {
   if (["read", "edit"].includes(id)) return "edit";
   if (id === "plan" || /^(render|check)(-\d+)?$/.test(id)) return "image";
   if (id === "look") return "vision";
+  if (id === "search" || id === "write") return "search";
   if (id === "listen") return "audio";
   return current;
 }

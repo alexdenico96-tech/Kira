@@ -11,7 +11,7 @@ import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
 import { callGemini, transcribeKiraAudio, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
 import { generateKiraImage } from "./lib/imageGeneration.js";
-import { callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
+import { callGroqWebSearch, callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
 import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
 import { classifyKiraIntent } from "./lib/intentRouter.js";
@@ -28,6 +28,7 @@ import { extractRequirements, verifyRequirements, requirementIssues, requirement
 import { progressStream } from "./lib/progressStream.js";
 import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
 import { buildDesignBrief } from "./lib/designDirection.js";
+import { currentDateLine, needsWebSearch, webSearchAnswer } from "./lib/webSearch.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -116,7 +117,7 @@ app.use(
 );
 
 
-const SYSTEM_PROMPT = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
+const SYSTEM_PROMPT_BASE = `Você é Kira, assistente de IA direta, cuidadosa e excelente em programação. Responda no idioma da última mensagem.
 Conversa: responda de forma útil, natural e concisa. Quando o usuário apenas apresentar uma ideia, personagem, projeto ou informação, reconheça o que foi dito e converse sobre o assunto. Não presuma que ele esteja pedindo código, arquitetura, planejamento ou criação de arquivos. Só proponha ou desenvolva soluções técnicas quando houver um pedido explícito ou uma pergunta que justifique isso.
 Código novo: use create_document. Para projetos complexos, aja como engenheira de software: planeje arquitetura, preserve a stack solicitada, gere configuração/dependências/entrypoints/componentes necessários e revise imports/exports/caminhos antes de entregar. Entregue TODOS os arquivos completos e conectados. Nunca reduza frameworks a HTML simples.
 Sites HTML/CSS/JS: por padrão use index.html + style.css + script.js separados; index.html deve importar ambos corretamente. Classes, IDs, caminhos e eventos precisam ser coerentes entre os três arquivos. Revise mentalmente o projeto antes de finalizar. IMPORTANTE: em arquivos .html, escreva marcação HTML literal e válida: atributos devem usar aspas normais, por exemplo lang="pt-BR" e charset="UTF-8". Nunca coloque barra invertida antes das aspas de atributos HTML. Barras invertidas de escape pertencem à serialização JSON, não ao conteúdo final do arquivo.
@@ -204,6 +205,11 @@ async function askRequirementsModel(prompt) {
 const publicBaseUrl = req => (process.env.KIRA_PUBLIC_URL || `${req.protocol}://${req.get("host")}`).replace(/\/$/,"");
 
 const VISUAL_REFERENCE_NOTE = `REFERÊNCIA VISUAL ANEXADA: a imagem a seguir é o alvo visual do projeto. Reproduza com a máxima fidelidade possível o layout (ordem e proporção das seções, alinhamentos, colunas), a paleta (extraia as cores e declare-as como tokens em :root), a tipografia (escolha a Google Font mais parecida), raios, sombras, espaçamentos, ícones e textos visíveis. Onde a imagem e a DIREÇÃO VISUAL divergirem, a imagem vence. Não reproduza logotipos de marcas registradas; use o nome do projeto do usuário.`;
+
+// KIRA_WEB_SEARCH_V1: data/hora reais em todo prompt — sem isso a Kira "vive" no ano do treinamento.
+function systemPrompt() {
+  return `${SYSTEM_PROMPT_BASE}\n${currentDateLine()}`;
+}
 
 const CURRENT_TERMS_VERSION = "2026-10-04-v1";
 const CURRENT_DISCLAIMER_VERSION = "2026-10-04-v1";
@@ -600,7 +606,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
     const route = routeRequest({message:textMessage,image,audio:null,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
 
     // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
-    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage)){
+    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage) && !needsWebSearch(textMessage)){
       const fp=cacheFingerprint(textMessage);
       let cached=await getCachedResponse(fp);
       if(!cached){
@@ -618,6 +624,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
 
     let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
     let fidelityNote = "";
+    let searchInfo = null; // fontes da pesquisa na web, quando houver
     let requirements = []; // checklist de fidelidade (também usado no fallback Groq)
     const withProjectImages = async files => {
       const result = await rewriteProjectImages(files, publicBaseUrl(req));
@@ -658,6 +665,22 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         }
         console.info(`[kira-image] fidelity attempts=${result.attempts} score=${v?.score ?? "n/a"} edit=${Boolean(previous)} reference=${Boolean(reference)}`);
       }
+      // KIRA_WEB_SEARCH_V1: perguntas sobre o presente são respondidas com pesquisa real na web.
+      if (!reply && !wantsArtifact && !editingArtifact && !wantsImage && !image?.data && needsWebSearch(textMessage)) {
+        try {
+          searchInfo = await webSearchAnswer({
+            message: textMessage, history, groqHistory, systemInstruction: systemPrompt(),
+            searchGemini: (systemInstruction, searchContents) => callGemini({ systemInstruction, contents: searchContents, tools: [{ google_search: {} }], timeoutMs: Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000) }),
+            searchGroq: GROQ_ENABLED ? (systemInstruction, msg, hist) => callGroqWebSearch({ systemInstruction, message: msg, history: hist }) : null,
+            onProgress: step
+          });
+          reply = searchInfo.text;
+          selectedProvider = searchInfo.provider;
+        } catch (searchErr) {
+          console.warn("[kira-search] indisponível; resposta sem pesquisa:", searchErr.status || searchErr.message);
+          step('search', 'Pesquisa indisponível agora', 'respondendo com o conhecimento interno', 'done');
+        }
+      }
       if (!reply) {
         if (wantsArtifact) step('understand', 'Entendendo o pedido');
         else if (editingArtifact) step('read', 'Lendo os arquivos do projeto', existingArtifact?.name || '');
@@ -666,7 +689,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       }
       if(!reply && complexity!=="advanced" && !editingArtifact && !wantsArtifact && !image && (route.task==="chat_small" || route.task==="chat")){
         try{
-          const extra=await callExtraPool({systemInstruction:SYSTEM_PROMPT,message:textMessage,history:groqHistory,maxTokens:700});
+          const extra=await callExtraPool({systemInstruction:systemPrompt(),message:textMessage,history:groqHistory,maxTokens:700});
           reply=extra.text; route.selectedProvider=extra.provider; route.selectedModel=extra.model;
           selectedProvider=extra.provider; selectedModel=extra.model;
         }catch(extraErr){
@@ -674,7 +697,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         }
       }
       if(!reply && !image && !audio && route.task==="chat_small" && route.providers[0]?.provider==="openai" && OPENAI_ENABLED){
-        reply=await callOpenAIText({systemInstruction:SYSTEM_PROMPT,message:textMessage,history:groqHistory,model:route.providers[0].model,maxTokens:900});
+        reply=await callOpenAIText({systemInstruction:systemPrompt(),message:textMessage,history:groqHistory,model:route.providers[0].model,maxTokens:900});
         route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
         selectedProvider="openai"; selectedModel=route.providers[0].model;
       }
@@ -703,7 +726,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         try {
           const preferredModel=process.env.KIRA_ADVANCED_GROQ_MODEL || "openai/gpt-oss-20b";
           reply=await callGroqFallback({
-            systemInstruction:SYSTEM_PROMPT, message:textMessage, history:groqHistory, preferredModel,
+            systemInstruction:systemPrompt(), message:textMessage, history:groqHistory, preferredModel,
             onSelectedModel:(model)=>{selectedModel=model;}
           });
           if(reply) {
@@ -717,7 +740,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         }
       }
       const data = reply ? null : await callGemini({
-        systemInstruction: SYSTEM_PROMPT,
+        systemInstruction: systemPrompt(),
         contents: aiContents,
         forceFunctionName: editingArtifact ? "update_artifact" : (wantsArtifact ? "create_document" : undefined)
       });
@@ -784,7 +807,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         // que mantém o que já está certo e só reescreve/cria os arquivos com problema.
         const missingCore=best.structural.some(i=>/^falta |nenhum arquivo válido|package\.json/.test(i));
         if(best.issues.length && (finishReason==="MAX_TOKENS" || missingCore || best.files.length<2)){
-          const retryData=await callGemini({ systemInstruction:SYSTEM_PROMPT, contents:[{role:"user",parts:[{text:projectPrompt(best.issues)}, ...referenceParts]}], forceFunctionName:"create_document" });
+          const retryData=await callGemini({ systemInstruction:systemPrompt(), contents:[{role:"user",parts:[{text:projectPrompt(best.issues)}, ...referenceParts]}], forceFunctionName:"create_document" });
           const retryCall=(retryData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
           if(retryCall?.name==="create_document"){
             const retried=evaluate(normalizeFiles(parseArtifactArgs(retryCall.args||{}).files),retryCall.args?.coverage);
@@ -796,7 +819,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
           // Problemas só visuais na 2ª passada não justificam outra chamada.
           if(pass===2 && !best.structural.length && !best.req.missing.length) break;
           try{
-            const fixData=await callGemini({ systemInstruction:SYSTEM_PROMPT, contents:[{role:"user",parts:[{text:projectFixPrompt(textMessage,best,requirements)}, ...referenceParts]}], forceFunctionName:"update_artifact" });
+            const fixData=await callGemini({ systemInstruction:systemPrompt(), contents:[{role:"user",parts:[{text:projectFixPrompt(textMessage,best,requirements)}, ...referenceParts]}], forceFunctionName:"update_artifact" });
             const fixCall=(fixData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
             const changes=Array.isArray(fixCall?.args?.changes)?fixCall.args.changes:[];
             if(!changes.length) break;
@@ -851,7 +874,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       if (GROQ_ENABLED) {
         try {
           if (editingArtifact) {
-            const patch = await callGroqArtifactUpdateFallback({ systemInstruction: SYSTEM_PROMPT, message: artifactEditPrompt(existingArtifact, textMessage) });
+            const patch = await callGroqArtifactUpdateFallback({ systemInstruction: systemPrompt(), message: artifactEditPrompt(existingArtifact, textMessage) });
             const applied=applyFileOperations(existingArtifact.files,patch.changes);
             const normalized=repairGeneratedHtml(applied.files);
             const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,await withProjectImages(normalized.files),patch.summary,applied.manifest);
@@ -859,7 +882,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
           } else if (wantsArtifact) {
             // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
-            const artifact = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,[],requirements) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
+            const artifact = await callGroqArtifactFallback({ systemInstruction: systemPrompt(), message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,[],requirements) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
             artifactName = artifact.projectName;
             artifactFiles = repairImageSources(repairPackageJsonNewlines(repairWebConnections(artifact.files))).files;
             console.info(`[kira-visual] provider=groq score=${inspectVisualQuality(artifactFiles,textMessage).score}`);
@@ -921,7 +944,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
                 `Gere SOMENTE estes arquivos ausentes, com conteúdo completo: ${[...missing].join(', ')}. ` +
                 `Retorne objeto JSON com projectName e files (path, content). Não inclua arquivos existentes. Preserve a stack solicitada.`;
               console.info(`[kira-artifact] targeted_missing=${missing.size} retry=1`);
-              const repaired = await callGroqArtifactFallback({ systemInstruction: SYSTEM_PROMPT, message: repairMessage,
+              const repaired = await callGroqArtifactFallback({ systemInstruction: systemPrompt(), message: repairMessage,
                 preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b",
                 onSelectedModel: model => { selectedModel=model; } });
               const existingSet = new Set(existingPaths.map(p => p.replaceAll('\\','/')));
@@ -943,7 +966,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             if (requirements.length) console.info(`[kira-developer] provider=groq requirements=${groqReq.covered}/${groqReq.total}`);
             reply = artifactSuccessReply(artifactFiles); fidelityNote = requirementsNote(groqReq);
           } else {
-            reply = await callGroqFallback({ systemInstruction: SYSTEM_PROMPT, message: textMessage, history: groqHistory, onSelectedModel: (model) => { selectedModel=model; } });
+            reply = await callGroqFallback({ systemInstruction: systemPrompt(), message: textMessage, history: groqHistory, onSelectedModel: (model) => { selectedModel=model; } });
           }
           usedFallback = true;
           selectedProvider="groq";
@@ -1011,7 +1034,7 @@ if (syntax.issues.length) {
         syntax,
         requestRepair: async (message) =>
           callGroqArtifactUpdateFallback({
-            systemInstruction: SYSTEM_PROMPT,
+            systemInstruction: systemPrompt(),
             message
           }),
         inspectSyntax: inspectProjectSyntax,
@@ -1056,18 +1079,20 @@ if (syntax.issues.length) {
 
     if(responseArtifactId) await setActiveProject(req.user.id,conv.id,responseArtifactId);
     if (artifactFiles?.length) step('save', responseArtifactId ? `Projeto pronto · v${artifactVersion || 1}` : 'Projeto pronto', '', 'done');
-    else if (!imageUrl) step('think', 'Resposta pronta', '', 'done');
+    else if (!imageUrl && !searchInfo) step('think', 'Resposta pronta', '', 'done');
     const hadAttachment = Boolean(image?.data || audio?.data);
 
     await appendMessages(req.user.id, conv.id, [
       { role: "user", content: textMessage, hadAttachment },
-      { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion }
+      { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion,
+        searched: Boolean(searchInfo), searchQueries: searchInfo?.queries || [], visitedSites: searchInfo?.sources || [], searchEntryPoint: searchInfo?.entryPoint || null }
     ]);
 
-    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio){
+    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio && !searchInfo){
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
-    res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false });
+    res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false,
+      sources: searchInfo?.sources || [], searchQueries: searchInfo?.queries || [], searchEntryPoint: searchInfo?.entryPoint || "" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro interno no servidor.", details: String(err) });

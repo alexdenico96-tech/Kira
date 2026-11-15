@@ -1,6 +1,18 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { formatSeconds } from "../lib/progress.js";
+import { Favicon } from "./SourcesBar.jsx";
+
+const iconSource = domain => ({ domain, favicon: `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64` });
+
+function StepIcons({ icons }) {
+  if (!icons?.length) return null;
+  return (
+    <span className="kira-step__icons">
+      {icons.map(domain => <Favicon key={domain} source={iconSource(domain)} size={16} />)}
+    </span>
+  );
+}
 
 export { mergeProgress, modeFromStep, formatSeconds } from "../lib/progress.js";
 
@@ -10,6 +22,7 @@ const TITLES = {
   image: "Kira está criando sua imagem",
   vision: "Kira está analisando a imagem",
   audio: "Kira está ouvindo",
+  search: "Kira está pesquisando na web",
   chat: "Kira está pensando"
 };
 
@@ -19,6 +32,7 @@ const FIRST_STEP = {
   image: "Interpretando a cena",
   vision: "Analisando a imagem",
   audio: "Transcrevendo o áudio",
+  search: "Pesquisando na web",
   chat: "Pensando na resposta"
 };
 
@@ -54,6 +68,7 @@ export default function KiraProgress({ steps = [], mode = "chat", startedAt = Da
             <div className="min-w-0">
               <p className="kira-step__label">{step.label}</p>
               {step.detail && <p className="kira-step__detail">{step.detail}</p>}
+              <StepIcons icons={step.icons} />
             </div>
           </li>
         ))}
@@ -69,10 +84,16 @@ export function KiraTrace({ trace }) {
   const [open, setOpen] = useState(false);
   if (!trace?.steps?.length) return null;
   const done = trace.steps.filter(step => step.state === "done").length;
+  const icons = trace.steps.flatMap(step => step.icons || []).slice(0, 4);
   return (
     <div>
       <button type="button" className="kira-trace" onClick={() => setOpen(value => !value)} aria-expanded={open}>
         <span className="kira-trace__check"><Check size={10} strokeWidth={3.2} /></span>
+        {icons.length > 0 && (
+          <span className="kira-favicon-stack">
+            {icons.map(domain => <Favicon key={domain} source={iconSource(domain)} size={15} />)}
+          </span>
+        )}
         Concluído em {formatSeconds(trace.seconds)} · {done} {done === 1 ? "fase" : "fases"}
         <ChevronDown size={13} className={`transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
@@ -84,6 +105,7 @@ export function KiraTrace({ trace }) {
               <div className="min-w-0">
                 <p className="kira-step__label">{step.label}</p>
                 {step.detail && <p className="kira-step__detail">{step.detail}</p>}
+                <StepIcons icons={step.icons} />
               </div>
             </li>
           ))}

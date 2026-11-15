@@ -5,6 +5,12 @@ import { FileDown, PanelsTopLeft } from "lucide-react";
 import Markdown from "./Markdown.jsx";
 import ImageGenerationAnimation from "./ImageGenerationAnimation.jsx";
 import KiraProgress, { KiraTrace } from "./KiraProgress.jsx";
+import TypewriterMarkdown from "./TypewriterMarkdown.jsx";
+import SourcesBar from "./SourcesBar.jsx";
+import { linkCitations } from "../lib/typewriter.js";
+
+// Fontes vêm na resposta nova (sources) ou do histórico salvo (visitedSites com objetos).
+const sourcesOf = m => m.sources?.length ? m.sources : (Array.isArray(m.visitedSites) ? m.visitedSites.filter(s => s && typeof s === "object" && s.url) : []);
 
 function Avatar({ live = false }) {
   return (
@@ -145,43 +151,23 @@ function GeneratedImage({ src }) {
   );
 }
 
-function RevealedMarkdown({ content }) {
-  const [visible, setVisible] = useState(0);
-
-  useEffect(() => {
-    setVisible(0);
-
-    if (!content) return;
-
-    const started = performance.now();
-    const duration = Math.min(
-      2200,
-      Math.max(300, content.length * 3)
-    );
-
-    let frame;
-
-    const tick = (now) => {
-      const ratio = Math.min(1, (now - started) / duration);
-
-      setVisible(
-        Math.min(
-          content.length,
-          Math.ceil(content.length * ratio)
-        )
-      );
-
-      if (ratio < 1) {
-        frame = requestAnimationFrame(tick);
-      }
-    };
-
-    frame = requestAnimationFrame(tick);
-
-    return () => cancelAnimationFrame(frame);
-  }, [content]);
-
-  return <Markdown>{content.slice(0, visible)}</Markdown>;
+// Corpo da resposta: escreve o texto e só então mostra as fontes (como no Gemini).
+function AssistantAnswer({ m, onTick }) {
+  const [typed, setTyped] = useState(!m.reveal);
+  const sources = sourcesOf(m);
+  return (
+    <>
+      <TypewriterMarkdown
+        content={linkCitations(m.content || "", sources)}
+        animate={Boolean(m.reveal)}
+        onTick={onTick}
+        onDone={() => setTyped(true)}
+      />
+      {typed && (
+        <SourcesBar sources={sources} queries={m.searchQueries || []} entryPoint={m.searchEntryPoint || ""} />
+      )}
+    </>
+  );
 }
 
 export default function MessageThread({
@@ -193,6 +179,16 @@ export default function MessageThread({
   onOpenArtifact
 }) {
   const endRef = useRef(null);
+
+  // Durante a "digitação", acompanha o texto só se o usuário já estiver perto do fim.
+  function followTyping() {
+    const end = endRef.current;
+    const scroller = end?.closest("main");
+    if (!scroller) return;
+    if (scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 160) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({
@@ -237,11 +233,7 @@ export default function MessageThread({
               ) : (
                 <>
                   <KiraTrace trace={m.trace} />
-                  {m.reveal ? (
-                    <RevealedMarkdown content={m.content || ""} />
-                  ) : (
-                    <Markdown>{m.content}</Markdown>
-                  )}
+                  <AssistantAnswer m={m} onTick={followTyping} />
 
                   {m.imageUrl && (
                     <GeneratedImage src={m.imageUrl} />

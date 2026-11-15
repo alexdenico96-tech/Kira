@@ -114,16 +114,17 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName, model }) {
+async function requestGemini({ systemInstruction, contents, apiKey, forceFunctionName, model, tools, timeoutMs }) {
   const hasAudio = contents.some(c => c.parts?.some(p => p.inlineData?.mimeType?.startsWith("audio/")));
   const res = await fetch(`${GEMINI_BASE}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
-    signal: AbortSignal.timeout(Math.max(3000, Number(hasAudio ? (process.env.KIRA_GEMINI_AUDIO_TIMEOUT_MS || 60000) : (forceFunctionName ? (process.env.KIRA_GEMINI_ARTIFACT_TIMEOUT_MS || 150000) : (process.env.KIRA_GEMINI_TIMEOUT_MS || 18000))))),
+    signal: AbortSignal.timeout(timeoutMs || Math.max(3000, Number(hasAudio ? (process.env.KIRA_GEMINI_AUDIO_TIMEOUT_MS || 60000) : (forceFunctionName ? (process.env.KIRA_GEMINI_ARTIFACT_TIMEOUT_MS || 150000) : (process.env.KIRA_GEMINI_TIMEOUT_MS || 18000))))),
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemInstruction }] },
       contents,
-      tools: buildTools(),
+      // KIRA_WEB_SEARCH_V1: a pesquisa usa só o google_search (não combinar com funções no Gemini 2.x).
+      tools: tools || buildTools(),
       ...(forceFunctionName ? {
         toolConfig: {
           functionCallingConfig: { mode: "ANY", allowedFunctionNames: [forceFunctionName] }
@@ -205,7 +206,7 @@ function chooseAlternatives(models, failedModel) {
 }
 
 // 404: consultar a lista real da chave. 503: não repetir, usar fallback existente.
-export async function callGemini({ systemInstruction, contents, forceFunctionName }) {
+export async function callGemini({ systemInstruction, contents, forceFunctionName, tools, timeoutMs }) {
   const keys = getApiKeys();
   if (!keys.length) { const e = new Error("GEMINI_API_KEY não configurada."); e.code = "missing_key"; throw e; }
   if (Date.now() < overloadUntil) {
@@ -216,7 +217,7 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
   const started = Date.now();
   const primary = normalizedModel(GEMINI_MODEL);
   const attempt = async (model) => {
-    const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName, model });
+    const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName, model, tools, timeoutMs });
     Object.defineProperty(data, "_kiraModel", { value: model, enumerable: false });
     console.info(`[kira-provider] provider=gemini model=${model} status=ok duration_ms=${Date.now()-started}`);
     return data;

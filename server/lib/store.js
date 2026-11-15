@@ -65,6 +65,7 @@ export async function initStore() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS document_content TEXT;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_name TEXT;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_files JSONB;`);
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS search_entry_point TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`CREATE TABLE IF NOT EXISTS auth_attempt_limits (key_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL, reset_at TIMESTAMPTZ NOT NULL);`);
@@ -295,7 +296,8 @@ export async function getConversation(userId, conversationId) {
             artifact_name AS "artifactName",
             artifact_files AS "artifactFiles",
             artifact_id AS "artifactId",
-            artifact_version AS "artifactVersion"
+            artifact_version AS "artifactVersion",
+            search_entry_point AS "searchEntryPoint"
      FROM messages WHERE conversation_id = $1 ORDER BY id ASC`,
     [conversationId]
   );
@@ -319,8 +321,8 @@ export async function appendMessages(userId, conversationId, newMessages) {
 
   for (const m of newMessages) {
     await pool.query(
-      `INSERT INTO messages (conversation_id, role, content, searched, search_queries, visited_sites, reasoning, search_disabled, image_url, had_attachment, document_name, document_content, artifact_name, artifact_files, artifact_id, artifact_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+      `INSERT INTO messages (conversation_id, role, content, searched, search_queries, visited_sites, reasoning, search_disabled, image_url, had_attachment, document_name, document_content, artifact_name, artifact_files, artifact_id, artifact_version, search_entry_point)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         conversationId,
         m.role,
@@ -337,7 +339,8 @@ export async function appendMessages(userId, conversationId, newMessages) {
         m.artifactName || null,
         m.artifactFiles ? JSON.stringify(m.artifactFiles) : null,
         m.artifactId || null,
-        m.artifactVersion || null
+        m.artifactVersion || null,
+        m.searchEntryPoint || null
       ]
     );
   }

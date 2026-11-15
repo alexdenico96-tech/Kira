@@ -27,9 +27,10 @@ export function progressStream(req, res, next) {
   const keepAlive = setInterval(() => write({ type: 'ping' }), 15000);
   res.on('close', () => clearInterval(keepAlive));
 
-  req.progress = (id, label, detail = '', state = 'active') => {
+  req.progress = (id, label, detail = '', state = 'active', extra = {}) => {
     if (!id || !label) return;
-    write({ type: 'progress', id, label: String(label).slice(0, 120), detail: String(detail || '').slice(0, 200), state });
+    const icons = Array.isArray(extra?.icons) ? extra.icons.map(String).filter(Boolean).slice(0, 8) : undefined;
+    write({ type: 'progress', id, label: String(label).slice(0, 120), detail: String(detail || '').slice(0, 200), state, ...(icons?.length ? { icons } : {}) });
   };
   res.status = code => { status = Number(code) || 200; return res; };
   res.json = body => {

@@ -190,3 +190,38 @@ Retorne SOMENTE operações necessárias. Não repita arquivos intactos. Use del
   if (!changes.length) throw new Error("Groq não devolveu operações válidas.");
   return { changes, summary: String(parsed.summary || "Alteração no projeto").slice(0, 240) };
 }
+
+// KIRA_WEB_SEARCH_V1: reserva de pesquisa na web com os sistemas Compound do Groq (busca embutida).
+export async function callGroqWebSearch({ systemInstruction, message, history = [] }) {
+  const keys = getGroqKeys();
+  if (!keys.length) { const e = new Error("Groq não configurada."); e.code = "not_configured"; throw e; }
+  const models = [...new Set([process.env.KIRA_GROQ_SEARCH_MODEL || "groq/compound-mini", "groq/compound"])];
+  let lastError;
+  for (const model of models) {
+    for (let attempt = 0; attempt < Math.min(keys.length, 3); attempt++) {
+      const apiKey = keys[groqKeyIndex++ % keys.length];
+      try {
+        const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "system", content: systemInstruction }, ...history.slice(-6), { role: "user", content: message }],
+            temperature: 0.3,
+            max_tokens: 2048
+          }),
+          signal: AbortSignal.timeout(Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000))
+        });
+        if (!res.ok) { const e = new Error(`Groq search (${model}) HTTP ${res.status}`); e.status = res.status; throw e; }
+        const data = await res.json();
+        const msg = data.choices?.[0]?.message;
+        if (!msg?.content) throw new Error("Groq search sem conteúdo");
+        return msg;
+      } catch (error) {
+        lastError = error;
+        if (error.status && error.status !== 429 && error.status < 500) break; // erro do pedido: tenta outro modelo
+      }
+    }
+  }
+  throw lastError;
+}

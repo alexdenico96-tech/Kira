@@ -18,3 +18,24 @@ test("modo da tela segue as fases do servidor", () => {
   assert.equal(modeFromStep("think", "vision"), "vision");
   assert.equal(formatSeconds(75), "1min 15s");
 });
+
+import { nextBoundary, revealSpeed, safePartialMarkdown, linkCitations } from "../src/lib/typewriter.js";
+
+test("escrita avança por palavras e fecha bloco de código aberto", () => {
+  assert.equal(nextBoundary("Olá mundo bonito", 1), 4);
+  assert.equal(safePartialMarkdown("Veja:\n```js\nconst a"), "Veja:\n```js\nconst a\n```");
+  assert.equal(revealSpeed(100), 75);
+  assert.equal(revealSpeed(4000), 500);
+});
+
+test("citações [n] viram links da fonte", () => {
+  const out = linkCitations("Fato [1] e outro [3].", [{ url: "https://a.com", domain: "a.com" }]);
+  assert.equal(out, 'Fato [1](https://a.com "fonte:a.com") e outro [3].');
+});
+
+test("fase de pesquisa guarda os ícones dos sites", async () => {
+  const { mergeProgress, modeFromStep } = await import("../src/lib/progress.js");
+  const steps = mergeProgress([], { id: "search", label: "3 fontes", state: "done", icons: ["g1.globo.com"] });
+  assert.deepEqual(steps[0].icons, ["g1.globo.com"]);
+  assert.equal(modeFromStep("search", "chat"), "search");
+});

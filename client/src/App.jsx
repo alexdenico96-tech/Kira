@@ -239,6 +239,10 @@ export default function App() {
           setProgress({ steps: liveSteps, mode: liveMode, startedAt });
         }
       );
+      // Deixa os ícones das fontes visíveis por um instante antes de a resposta começar a ser escrita.
+      if (liveSteps.some((step) => step.icons?.length)) {
+        await new Promise((resolve) => setTimeout(resolve, 1400));
+      }
       const trace = liveSteps.length
         ? {
             steps: liveSteps.map((step) => ({ ...step, state: "done" })),
@@ -253,7 +257,10 @@ export default function App() {
         {
           role: "assistant",
           content: res.reply,
-          reveal: !res.artifactFiles?.length,
+          reveal: true,
+          sources: res.sources || [],
+          searchQueries: res.searchQueries || [],
+          searchEntryPoint: res.searchEntryPoint || "",
           imageUrl: res.imageUrl,
           documentName: res.documentName,
           documentContent: res.documentContent,

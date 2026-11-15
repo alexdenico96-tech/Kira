@@ -446,3 +446,161 @@ html.light {
     animation: none !important;
   }
 }
+
+/* ---------- ESCRITA AO VIVO (sem streaming) ---------- */
+
+.markdown-body.is-typing > :last-child:not(ul):not(ol):not(pre):not(table)::after,
+.markdown-body.is-typing > ul:last-child > li:last-child::after,
+.markdown-body.is-typing > ol:last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: .55em;
+  height: 1.05em;
+  margin-left: 3px;
+  vertical-align: -0.16em;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--kira-light-1), var(--kira-light-2));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--kira-light-1) 70%, transparent);
+  animation: kiraCaret 1s steps(2, start) infinite;
+}
+
+@keyframes kiraCaret { to { visibility: hidden; } }
+
+/* ---------- CITAÇÕES E FONTES ---------- */
+
+.markdown-body a.kira-cite {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  margin: 0 1px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
+  vertical-align: 2px;
+  text-decoration: none;
+  color: var(--kira-accent2);
+  background: color-mix(in srgb, var(--kira-accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--kira-accent) 30%, transparent);
+  transition: background .2s ease, transform .2s ease;
+}
+
+.markdown-body a.kira-cite:hover { background: color-mix(in srgb, var(--kira-accent) 28%, transparent); transform: translateY(-1px); }
+
+.kira-favicon {
+  display: inline-block;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: #fff;
+  object-fit: cover;
+  box-shadow: 0 0 0 2px var(--kira-panel);
+}
+
+.kira-favicon--letter {
+  display: inline-grid;
+  place-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, var(--kira-light-1), var(--kira-light-2));
+}
+
+.kira-favicon-stack { display: inline-flex; align-items: center; }
+.kira-favicon-stack > * + * { margin-left: -6px; }
+
+.kira-sources-toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px 6px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--kira-line);
+  background: color-mix(in srgb, var(--kira-panel2) 75%, transparent);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--kira-text);
+}
+
+.kira-sources-toggle:hover { border-color: color-mix(in srgb, var(--kira-accent2) 50%, transparent); }
+
+.kira-sources-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  animation: kiraFadeIn .3s ease-out both;
+}
+
+.kira-source-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--kira-line);
+  background: color-mix(in srgb, var(--kira-panel2) 70%, transparent);
+  text-decoration: none;
+  transition: border-color .2s ease, transform .2s ease, background .2s ease;
+}
+
+.kira-source-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--kira-accent2) 50%, transparent);
+  background: var(--kira-panel2);
+}
+
+.kira-source-card__head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--kira-muted);
+}
+
+.kira-source-card__n {
+  margin-left: auto;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--kira-accent2);
+}
+
+.kira-source-card__title {
+  font-size: 12.5px;
+  line-height: 1.35;
+  color: var(--kira-text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.kira-search-suggestions {
+  width: 100%;
+  max-width: 560px;
+  height: 64px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+}
+
+.kira-step__icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.kira-step__icons .kira-favicon { animation: kiraPop .4s cubic-bezier(.3, 1.6, .5, 1) both; }
+.kira-step__icons .kira-favicon:nth-child(2) { animation-delay: .06s; }
+.kira-step__icons .kira-favicon:nth-child(3) { animation-delay: .12s; }
+.kira-step__icons .kira-favicon:nth-child(4) { animation-delay: .18s; }
+.kira-step__icons .kira-favicon:nth-child(5) { animation-delay: .24s; }
+.kira-step__icons .kira-favicon:nth-child(6) { animation-delay: .30s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .markdown-body.is-typing > *::after,
+  .kira-step__icons .kira-favicon { animation: none !important; }
+}
