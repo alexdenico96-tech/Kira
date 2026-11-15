@@ -9,7 +9,7 @@ import { signToken, requireAuth } from "./lib/auth.js";
 import { authLimit } from "./lib/authLimits.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
-import { callGemini, transcribeKiraAudio, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
+import { callGemini, geminiKeyCount, transcribeKiraAudio, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
 import { generateKiraImage } from "./lib/imageGeneration.js";
 import { callGroqWebSearch, callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
@@ -190,6 +190,23 @@ async function askVisionModel(prompt, bytes, mimeType) {
     contents: [{ role: "user", parts: [{ text: prompt }, { inlineData: { mimeType, data: Buffer.from(bytes).toString("base64") } }] }]
   });
   return (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join("\n");
+}
+
+// KIRA_WEB_SEARCH_V1: Google Search pelo Gemini, passando pelas outras chaves quando uma bate o limite (429).
+// KIRA_SEARCH_GEMINI_MODEL permite usar um modelo com cota de pesquisa separada (ex.: gemini-2.5-flash).
+async function geminiWebSearch(systemInstruction, contents) {
+  const attempts = Math.max(1, geminiKeyCount());
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await callGemini({ systemInstruction, contents, tools: [{ google_search: {} }], timeoutMs: Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000), model: process.env.KIRA_SEARCH_GEMINI_MODEL || undefined });
+    } catch (error) {
+      lastError = error;
+      if (error.status !== 429) break;
+      console.warn(`[kira-search] gemini chave ${i + 1}/${attempts} no limite; tentando a próxima`);
+    }
+  }
+  throw lastError;
 }
 
 async function askRequirementsModel(prompt) {
@@ -670,7 +687,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         try {
           searchInfo = await webSearchAnswer({
             message: textMessage, history, groqHistory, systemInstruction: systemPrompt(),
-            searchGemini: (systemInstruction, searchContents) => callGemini({ systemInstruction, contents: searchContents, tools: [{ google_search: {} }], timeoutMs: Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000) }),
+            searchGemini: geminiWebSearch,
             searchGroq: GROQ_ENABLED ? (systemInstruction, msg, hist) => callGroqWebSearch({ systemInstruction, message: msg, history: hist }) : null,
             onProgress: step
           });
@@ -991,7 +1008,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       try {
         searchInfo = await webSearchAnswer({
           message: textMessage, history, groqHistory, systemInstruction: systemPrompt(),
-          searchGemini: (systemInstruction, searchContents) => callGemini({ systemInstruction, contents: searchContents, tools: [{ google_search: {} }], timeoutMs: Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000) }),
+          searchGemini: geminiWebSearch,
           searchGroq: GROQ_ENABLED ? (systemInstruction, msg, hist) => callGroqWebSearch({ systemInstruction, message: msg, history: hist }) : null,
           onProgress: step
         });

@@ -20,10 +20,16 @@ function cloudflareAccounts(){
 }
 function cloudflareKey(account){return `cloudflare:${account.id}`;}
 function cooling(name){return (states.get(name)?.until||0)>Date.now();}
-function fail(name,status){if(status===429 || status>=500)states.set(name,{until:Date.now()+FAILURE_WINDOW_MS,status});}
+// KIRA_CLOUDFLARE_DAILY_V1: cota diária acabou → não adianta tentar de novo em 10 minutos; volta à meia-noite UTC.
+function nextUtcMidnight(){const d=new Date();return Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()+1)+60000;}
+function fail(name,status,body=""){
+  if(status===429 && /daily free allocation|neurons/i.test(body)){states.set(name,{until:nextUtcMidnight(),status});return;}
+  if(status===429 || status>=500)states.set(name,{until:Date.now()+FAILURE_WINDOW_MS,status});
+}
 function ok(name){states.delete(name);}
 function enabled(name){
-  if(name==="cloudflare")return cloudflareAccounts().length>0;
+  // Os 10 mil neurons diários da Cloudflare são compartilhados entre texto e imagens: por padrão ficam só para imagens.
+  if(name==="cloudflare")return cloudflareAccounts().length>0 && process.env.KIRA_CLOUDFLARE_TEXT==="1";
   if(name==="mistral")return Boolean(process.env.MISTRAL_API_KEY);
   if(name==="openrouter")return Boolean(process.env.OPENROUTER_API_KEY);
   return false;
@@ -57,7 +63,7 @@ async function requestProvider(name,c,{systemInstruction,message,history=[],maxT
     console.info(`[kira-provider] provider=${name}${label} event=start model=${c.model}`);
     try{
       const res=await fetch(c.url,{method:"POST",headers:{Authorization:`Bearer ${c.key}`,"Content-Type":"application/json",...c.headers},body:JSON.stringify(body),signal:AbortSignal.timeout(Math.max(2000,Number(process.env.KIRA_EXTRA_TIMEOUT_MS||6500)))});
-      if(!res.ok){const txt=await res.text();fail(stateKey,res.status);const e=new Error(`${name} (${res.status}): ${txt.slice(0,500)}`);e.status=res.status;throw e;}
+      if(!res.ok){const txt=await res.text();fail(stateKey,res.status,txt);const e=new Error(`${name} (${res.status}): ${txt.slice(0,500)}`);e.status=res.status;throw e;}
       const data=await res.json();
       const content=data.choices?.[0]?.message?.content;
       if(typeof content!=="string"||!content.trim())throw new Error(`${name} respondeu sem texto.`);

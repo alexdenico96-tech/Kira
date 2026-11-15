@@ -191,13 +191,16 @@ Retorne SOMENTE operações necessárias. Não repita arquivos intactos. Use del
   return { changes, summary: String(parsed.summary || "Alteração no projeto").slice(0, 240) };
 }
 
-// KIRA_WEB_SEARCH_V1: reserva de pesquisa na web com os sistemas Compound do Groq (busca embutida).
+// KIRA_WEB_SEARCH_V1: reserva de pesquisa na web no Groq.
+// 1º sistemas Compound (busca embutida); se a conta não tiver acesso (404), GPT-OSS com a ferramenta browser_search.
 export async function callGroqWebSearch({ systemInstruction, message, history = [] }) {
   const keys = getGroqKeys();
   if (!keys.length) { const e = new Error("Groq não configurada."); e.code = "not_configured"; throw e; }
-  const models = [...new Set([process.env.KIRA_GROQ_SEARCH_MODEL || "groq/compound-mini", "groq/compound"])];
+  const configured = (process.env.KIRA_GROQ_SEARCH_MODELS || "").split(",").map(m => m.trim()).filter(Boolean);
+  const plans = configured.length ? configured : ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "groq/compound-mini", "groq/compound"];
   let lastError;
-  for (const model of models) {
+  for (const model of plans) {
+    const browserTool = model.startsWith("openai/gpt-oss");
     for (let attempt = 0; attempt < Math.min(keys.length, 3); attempt++) {
       const apiKey = keys[groqKeyIndex++ % keys.length];
       try {
@@ -207,19 +210,28 @@ export async function callGroqWebSearch({ systemInstruction, message, history = 
           body: JSON.stringify({
             model,
             messages: [{ role: "system", content: systemInstruction }, ...history.slice(-6), { role: "user", content: message }],
-            temperature: 0.3,
-            max_tokens: 2048
+            ...(browserTool ? { tools: [{ type: "browser_search" }], tool_choice: "required", max_completion_tokens: 2048 } : { max_tokens: 2048 }),
+            temperature: browserTool ? 1 : 0.3
           }),
           signal: AbortSignal.timeout(Number(process.env.KIRA_SEARCH_TIMEOUT_MS || 45000))
         });
-        if (!res.ok) { const e = new Error(`Groq search (${model}) HTTP ${res.status}`); e.status = res.status; throw e; }
+        if (!res.ok) {
+          const text = await res.text();
+          let reason = "";
+          try { reason = JSON.parse(text)?.error?.message || ""; } catch { reason = text.slice(0, 160); }
+          const e = new Error(`Groq search (${model}) HTTP ${res.status}: ${reason.slice(0, 160)}`);
+          e.status = res.status;
+          throw e;
+        }
         const data = await res.json();
         const msg = data.choices?.[0]?.message;
-        if (!msg?.content) throw new Error("Groq search sem conteúdo");
+        if (!msg?.content) throw new Error(`Groq search (${model}) sem conteúdo`);
+        console.info(`[kira-search] groq model=${model} ok`);
         return msg;
       } catch (error) {
         lastError = error;
-        if (error.status && error.status !== 429 && error.status < 500) break; // erro do pedido: tenta outro modelo
+        console.warn(`[kira-search] groq model=${model} failed=${error.message}`);
+        if (error.status && error.status !== 429 && error.status < 500) break; // modelo indisponível: próximo modelo
       }
     }
   }

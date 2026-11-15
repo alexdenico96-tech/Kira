@@ -65,3 +65,9 @@ test('detecta resposta que admite estar desatualizada', async () => {
   assert.equal(looksOutdated('No tengo acceso a información en tiempo real.'), true);
   assert.equal(looksOutdated('Recursão é quando uma função chama a si mesma.'), false);
 });
+
+test('GPT-OSS com browser_search: fontes extraídas dos links da resposta', async () => {
+  const { parseGroqSearch } = await mod;
+  const r = parseGroqSearch({ content: 'O dólar fechou a R$ 5,08 ([Valor](https://valor.globo.com/mercados/x)). Veja também https://www.infomoney.com.br/cotacoes/dolar.', executed_tools: [{ type: 'browser.search' }] });
+  assert.deepEqual(r.sources.map(s => s.domain), ['valor.globo.com', 'infomoney.com.br']);
+});

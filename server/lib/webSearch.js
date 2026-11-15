@@ -119,6 +119,14 @@ export function parseGroqSearch(message) {
     try { const args = typeof tool.arguments === 'string' ? JSON.parse(tool.arguments) : tool.arguments; if (args?.query) queries.push(String(args.query)); } catch { /* sem consulta legível */ }
     for (const r of tool?.search_results?.results || []) results.push({ url: r.url, title: r.title });
   }
+  if (!results.length) {
+    // browser_search (GPT-OSS) nem sempre devolve search_results: extrai os links da resposta e das ferramentas.
+    const haystack = `${message?.content || ''}\n${JSON.stringify(tools)}`;
+    for (const m of haystack.matchAll(/\[([^\]]{2,120})\]\((https?:\/\/[^)\s]+)\)|(https?:\/\/[^\s"'<>)\]\\]+)/g)) {
+      const url = (m[2] || m[3] || '').replace(/[.,;:]+$/, '');
+      if (url && !/groq\.com|googleapis\.com/.test(url)) results.push({ url, title: m[1] || '' });
+    }
+  }
   return { text: String(message?.content || '').trim(), sources: normalizeSources(results), queries: queries.slice(0, 6), entryPoint: '' };
 }
 

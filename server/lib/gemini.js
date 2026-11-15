@@ -206,7 +206,9 @@ function chooseAlternatives(models, failedModel) {
 }
 
 // 404: consultar a lista real da chave. 503: não repetir, usar fallback existente.
-export async function callGemini({ systemInstruction, contents, forceFunctionName, tools, timeoutMs }) {
+export function geminiKeyCount() { return getApiKeys().length; }
+
+export async function callGemini({ systemInstruction, contents, forceFunctionName, tools, timeoutMs, model: modelOverride }) {
   const keys = getApiKeys();
   if (!keys.length) { const e = new Error("GEMINI_API_KEY não configurada."); e.code = "missing_key"; throw e; }
   if (Date.now() < overloadUntil) {
@@ -215,7 +217,7 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
   }
   const key = keys[keyIndex++ % keys.length];
   const started = Date.now();
-  const primary = normalizedModel(GEMINI_MODEL);
+  const primary = normalizedModel(modelOverride || GEMINI_MODEL);
   const attempt = async (model) => {
     const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName, model, tools, timeoutMs });
     Object.defineProperty(data, "_kiraModel", { value: model, enumerable: false });
