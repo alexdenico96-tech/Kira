@@ -5,13 +5,14 @@ import {
 } from 'docx';
 import { themeOf, tint } from './themes.js';
 import { inlineRuns } from './inline.js';
+import { langOf } from './language.js';
 
 const runs = (text, extra = {}) => inlineRuns(text).map(r => new TextRun({ text: r.text, bold: r.bold || extra.bold, italics: r.italic || extra.italics, color: extra.color, size: extra.size }));
 
 export async function renderDocx(spec) {
   const t = themeOf(spec.theme);
   const children = [];
-  const date = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+  const date = new Intl.DateTimeFormat(langOf(spec.lang).locale, { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
 
   // Capa
   children.push(

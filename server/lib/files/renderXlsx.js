@@ -2,12 +2,15 @@
 import ExcelJS from 'exceljs';
 import { themeOf, tint } from './themes.js';
 import { parseCell } from './values.js';
+import { langOf, CURRENCIES } from './language.js';
 
-const FORMATS = { currency: '"R$" #,##0.00', percent: '0.0%', integer: '#,##0', number: '#,##0.00', date: 'dd/mm/yyyy' };
+const BASE_FORMATS = { percent: '0.0%', integer: '#,##0', number: '#,##0.00' };
 const colLetter = n => { let s = ''; for (n += 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s; return s; };
 
 export async function renderXlsx(spec) {
   const t = themeOf(spec.theme);
+  const L = langOf(spec.lang);
+  const FORMATS = { ...BASE_FORMATS, currency: CURRENCIES[spec.currency] || CURRENCIES[L.defaultCurrency], date: L.dateFmt };
   const wb = new ExcelJS.Workbook();
   wb.creator = spec.author || 'Kira';
   wb.title = spec.title;
@@ -63,7 +66,7 @@ export async function renderXlsx(spec) {
       const row = ws.getRow(lastData + 1);
       cols.forEach((c, ci) => {
         const cell = row.getCell(ci + 1);
-        if (ci === 0) cell.value = 'Total';
+        if (ci === 0) cell.value = L.total;
         else if (['number', 'integer', 'currency'].includes(c.type)) {
           cell.value = { formula: `SUM(${colLetter(ci)}4:${colLetter(ci)}${lastData})` };
           cell.numFmt = FORMATS[c.type];

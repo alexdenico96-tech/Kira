@@ -26,12 +26,12 @@ import { inspectProjectFiles } from "./lib/qualityGate.js";
 import { inspectVisualQuality, repairImageSources } from "./lib/visualQuality.js";
 import { designEditGuidance } from "./lib/designDirection.js";
 import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImageId } from "./lib/projectImages.js";
-import { extractRequirements, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
+import { extractRequirements, extractRequirementsHeuristic, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
 import { progressStream } from "./lib/progressStream.js";
 import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
 import { buildDesignBrief } from "./lib/designDirection.js";
 import { currentDateLine, needsWebSearch, webSearchAnswer, looksOutdated } from "./lib/webSearch.js";
-import { FORMATS as FILE_FORMATS, detectFileRequest, filePlannerPrompt, renderFile } from "./lib/files/index.js";
+import { FORMATS as FILE_FORMATS, detectFileRequest, filePlannerPrompt, renderFile, normalizeSpec as normalizeFileSpec, inspectFileSpec, detectLanguage, detectCurrency, langOf } from "./lib/files/index.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudioDetailed } from "./lib/kiraTranscription.js";
@@ -179,33 +179,73 @@ function parseLooseJson(text) {
   try { return JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
 }
 
-async function createKiraFile({ format, request, history = [], groqHistory = [], userId, step = () => {}, presetSpec = null }) {
-  const label = FILE_FORMATS[format].label;
-  let spec = presetSpec;
-  let provider = "gemini";
-  if (!spec) {
-    step("file-plan", `Planejando o conteúdo do ${label}`);
-    try {
-      const data = await callGemini({ systemInstruction: systemPrompt(), contents: [...history.slice(-8), { role: "user", parts: [{ text: filePlannerPrompt(request, format) }] }], forceFunctionName: "create_file" });
-      spec = (data?.candidates?.[0]?.content?.parts || []).find(p => p.functionCall?.name === "create_file")?.functionCall?.args || null;
-    } catch (error) {
-      console.warn("[kira-file] planejamento no Gemini falhou:", error.status || error.message);
-    }
-    if (!spec && GROQ_ENABLED) {
-      provider = "groq";
-      const text = await callGroqFallback({
-        systemInstruction: `${systemPrompt()}\nResponda SOMENTE com um objeto JSON válido, sem texto antes ou depois.`,
-        message: `${filePlannerPrompt(request, format)}\nEm vez de chamar a função, responda com o JSON dos argumentos de create_file (campos: format, fileName, title, subtitle, author, theme, ${FILE_FORMATS[format].kind === "presentation" ? "slides" : FILE_FORMATS[format].kind === "spreadsheet" ? "sheets" : "blocks"}).`,
-        history: groqHistory
-      });
-      spec = parseLooseJson(text);
-    }
-    if (!spec) { const e = new Error("Não consegui planejar o conteúdo do arquivo agora."); e.status = 503; throw e; }
-  }
-  const parts = spec.slides?.length ? `${spec.slides.length} slides` : spec.sheets?.length ? `${spec.sheets.length} aba(s)` : `${(spec.blocks || []).filter(b => b.type === "heading").length} seções`;
-  step("file-plan", "Conteúdo planejado", `${spec.title || ""} · ${parts}`, "done");
+// Modelo do planejamento de arquivos: o "lite" escreve conteúdo raso em estruturas grandes.
+const FILE_MODELS = [...new Set([process.env.KIRA_FILE_GEMINI_MODEL || "gemini-flash-latest", undefined])];
+const WHISPER_LANG = { portuguese: "pt", spanish: "es", english: "en", pt: "pt", es: "es", en: "en" };
 
-  const imageSlides = format === "pptx" ? (spec.slides || []).filter(s => s?.layout === "image" && s.imagePrompt).length : 0;
+const FILE_REPLY = {
+  pt: (title, label, summary) => `Pronto! Criei **${title}** em ${label} (${summary}).\n\nÉ só baixar no cartão abaixo. Se quiser, posso mudar o tema, o tamanho ou o conteúdo.`,
+  es: (title, label) => `¡Listo! Creé **${title}** en ${label}.\n\nPuedes descargarlo en la tarjeta de abajo. Si quieres, cambio el tema, la extensión o el contenido.`,
+  en: (title, label) => `Done! I created **${title}** as a ${label} file.\n\nYou can download it from the card below. I can change the theme, length or content if you'd like.`
+};
+
+async function planFileSpec({ format, request, history, groqHistory, lang, currency, requirements, issues = [], previous = null }) {
+  const prompt = filePlannerPrompt(request, format, { lang, currency, requirements, issues, previous });
+  for (const model of FILE_MODELS) {
+    try {
+      const data = await callGemini({ systemInstruction: systemPrompt(), contents: [...history.slice(-8), { role: "user", parts: [{ text: prompt }] }], forceFunctionName: "create_file", model });
+      const args = (data?.candidates?.[0]?.content?.parts || []).find(p => p.functionCall?.name === "create_file")?.functionCall?.args;
+      if (args) return { spec: args, provider: `gemini:${data._kiraModel || model || GEMINI_MODEL}` };
+    } catch (error) {
+      console.warn(`[kira-file] planejamento gemini (${model || GEMINI_MODEL}) falhou:`, error.status || error.message);
+    }
+  }
+  if (GROQ_ENABLED) {
+    const kind = FILE_FORMATS[format].kind;
+    const text = await callGroqFallback({
+      systemInstruction: `${systemPrompt()}\nResponda SOMENTE com um objeto JSON válido, sem texto antes ou depois.`,
+      message: `${prompt}\nEm vez de chamar a função, responda com o JSON dos argumentos de create_file (campos: format, fileName, title, subtitle, author, theme, currency, ${kind === "presentation" ? "slides" : kind === "spreadsheet" ? "sheets" : "blocks"}).`,
+      history: groqHistory
+    });
+    const spec = parseLooseJson(text);
+    if (spec) return { spec, provider: "groq" };
+  }
+  return { spec: null, provider: null };
+}
+
+async function createKiraFile({ format, request, history = [], groqHistory = [], userId, step = () => {}, presetSpec = null, langHint = null }) {
+  const label = FILE_FORMATS[format].label;
+  // KIRA_FILES_LANG_V1: idioma do pedido (ou do áudio) decide o idioma do arquivo.
+  const lang = detectLanguage(request, WHISPER_LANG[String(langHint || "").toLowerCase()] || "pt");
+  const currency = detectCurrency(request, lang);
+  const requirements = extractRequirementsHeuristic(request);
+  const maxAttempts = Math.max(1, Math.min(4, Number(process.env.KIRA_FILE_MAX_ATTEMPTS || 3)));
+
+  step("file-plan", `Planejando o conteúdo do ${label}`, `idioma: ${langOf(lang).name} · moeda: ${currency}`);
+  let raw = presetSpec;
+  let provider = "gemini";
+  if (!raw) ({ spec: raw, provider } = await planFileSpec({ format, request, history, groqHistory, lang, currency, requirements }));
+  if (!raw) { const e = new Error("Não consegui planejar o conteúdo do arquivo agora."); e.status = 503; throw e; }
+
+  // KIRA_FILES_QUALITY_V1: confere contra o pedido e corrige antes de montar o arquivo.
+  let spec = normalizeFileSpec(raw, format, { lang, currency });
+  let issues = inspectFileSpec(spec, request, { lang, requirements });
+  step("file-plan", "Conteúdo planejado", `${spec.title} · ${issues.length ? `${issues.length} ponto(s) a ajustar` : "conferido"}`, "done");
+  console.info(`[kira-file] attempt=1 provider=${provider} lang=${lang} issues=${issues.length}${issues.length ? ` first="${issues[0].slice(0, 90)}"` : ""}`);
+
+  for (let attempt = 2; attempt <= maxAttempts && issues.length; attempt++) {
+    step(`file-fix-${attempt}`, `Ajustando o conteúdo · ${issues.length} ponto(s)`, issues[0].slice(0, 110));
+    const retry = await planFileSpec({ format, request, history, groqHistory, lang, currency, requirements, issues, previous: { title: spec.title, slides: spec.slides, sheets: spec.sheets.map(s => ({ ...s, rows: s.rows.slice(0, 40) })), blocks: spec.blocks } });
+    if (!retry.spec) break;
+    const candidate = normalizeFileSpec(retry.spec, format, { lang, currency });
+    const candidateIssues = inspectFileSpec(candidate, request, { lang, requirements });
+    console.info(`[kira-file] attempt=${attempt} provider=${retry.provider} issues=${candidateIssues.length}`);
+    step(`file-fix-${attempt}`, `Revisão ${attempt - 1} concluída`, candidateIssues.length ? `${candidateIssues.length} ponto(s) restante(s)` : "tudo conferido", "done");
+    if (candidateIssues.length <= issues.length) { raw = retry.spec; spec = candidate; issues = candidateIssues; provider = retry.provider; }
+    else break;
+  }
+
+  const imageSlides = format === "pptx" ? spec.slides.filter(s => s.layout === "image" && s.imagePrompt).length : 0;
   if (imageSlides) step("file-images", `Gerando ${Math.min(3, imageSlides)} imagem(ns) para os slides`);
   const resolveImage = async prompt => {
     const url = await generateKiraImage(prompt, { plannedPrompt: `${prompt}. Professional, high quality, no text, no watermark.`, layout: { width: 896, height: 1152, name: "vertical" } });
@@ -214,15 +254,15 @@ async function createKiraFile({ format, request, history = [], groqHistory = [],
     fsp.unlink(file).catch(() => {});
     return { bytes, mimeType: file.endsWith(".png") ? "image/png" : file.endsWith(".webp") ? "image/webp" : "image/jpeg" };
   };
-  if (imageSlides) step("file-images", "Imagens prontas", "", "done");
 
   step("file-render", `Montando o arquivo ${label}`);
-  const rendered = await renderFile(spec, format, { resolveImage });
+  const rendered = await renderFile(raw, format, { resolveImage, lang, currency });
+  if (imageSlides) step("file-images", "Imagens prontas", "", "done");
   const saved = await saveGeneratedFile(userId, { id: randomUUID(), name: rendered.fileName, format, mime: rendered.mime, buffer: rendered.buffer, summary: rendered.summary });
   step("file-render", `${label} pronto · ${rendered.summary}`, formatBytes(saved.size), "done");
-  console.info(`[kira-file] format=${format} provider=${provider} size=${saved.size} summary="${rendered.summary}"`);
-  const file = { id: saved.id, name: saved.name, format, label, size: saved.size, summary: rendered.summary, title: rendered.spec.title, theme: rendered.spec.theme };
-  return { file, provider, reply: `Pronto! Criei **${rendered.spec.title}** em ${label} (${rendered.summary}).${rendered.spec.subtitle ? `\n\n${rendered.spec.subtitle}` : ""}\n\nÉ só baixar no cartão abaixo. Se quiser, posso mudar o tema, o tamanho ou o conteúdo.` };
+  console.info(`[kira-file] format=${format} provider=${provider} lang=${lang} size=${saved.size} summary="${rendered.summary}" remaining_issues=${issues.length}`);
+  const file = { id: saved.id, name: saved.name, format, label, size: saved.size, summary: rendered.summary, title: rendered.spec.title, theme: rendered.spec.theme, lang };
+  return { file, provider, reply: (FILE_REPLY[lang] || FILE_REPLY.pt)(rendered.spec.title, label, rendered.summary) };
 }
 
 // KIRA_DEVELOPER_FIX_PASS_V1: prompt de correção cirúrgica (só arquivos com problema + requisitos faltantes).
@@ -793,7 +833,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         console.info(`[kira-image] fidelity attempts=${result.attempts} score=${v?.score ?? "n/a"} edit=${Boolean(previous)} reference=${Boolean(reference)}`);
       }
       if (!reply && fileRequest) {
-        const made = await createKiraFile({ format: fileRequest.format, request: textMessage, history, groqHistory, userId: req.user.id, step });
+        const made = await createKiraFile({ format: fileRequest.format, request: textMessage, history, groqHistory, userId: req.user.id, step, langHint: voiceInfo?.language });
         fileMeta = made.file;
         reply = made.reply;
         selectedProvider = made.provider;
@@ -885,7 +925,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       if (functionCall?.name === "create_file") {
         // O modelo decidiu gerar um arquivo no meio da conversa ("me manda isso em PDF").
         const format = FILE_FORMATS[functionCall.args?.format] ? functionCall.args.format : "pdf";
-        const made = await createKiraFile({ format, request: textMessage, presetSpec: functionCall.args, userId: req.user.id, step });
+        const made = await createKiraFile({ format, request: textMessage, presetSpec: functionCall.args, history, groqHistory, userId: req.user.id, step, langHint: voiceInfo?.language });
         fileMeta = made.file;
         reply = made.reply;
       } else if (functionCall?.name === "generate_image") {

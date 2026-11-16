@@ -3,6 +3,7 @@
 import PDFDocument from 'pdfkit';
 import { themeOf, tint, hex } from './themes.js';
 import { inlineRuns } from './inline.js';
+import { langOf } from './language.js';
 
 // Fontes padrão do PDF usam WinAnsi: troca o que não existe nelas por equivalentes.
 const clean = s => String(s || '')
@@ -43,7 +44,7 @@ export async function renderPdf(spec) {
   doc.rect(left, PH * 0.26, 6, 120).fill(hex(t.accent));
   doc.font(FONT.bold).fontSize(32).fillColor('#FFFFFF').text(clean(spec.title), left + 24, PH * 0.26, { width: width - 90, lineGap: 2 });
   if (spec.subtitle) doc.moveDown(0.5).font(FONT.regular).fontSize(14).fillColor('#CBD5E1').text(clean(spec.subtitle), left + 24, doc.y, { width: width - 90 });
-  const date = new Intl.DateTimeFormat('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+  const date = new Intl.DateTimeFormat(langOf(spec.lang).locale, { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
   doc.font(FONT.bold).fontSize(11).fillColor(hex(t.primary)).text(clean([spec.author, date].filter(Boolean).join('   ·   ')), left, PH * 0.62, { width });
   doc.addPage();
 

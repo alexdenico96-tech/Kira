@@ -1,6 +1,7 @@
 // PowerPoint 16:9 com 10 layouts e tema. Textos curtos no slide; o detalhe vai nas anotações.
 import pptxgen from 'pptxgenjs';
 import { themeOf, tint } from './themes.js';
+import { langOf } from './language.js';
 
 const W = 13.333;
 const H = 7.5;
@@ -15,6 +16,7 @@ const sizeFor = (text, base, steps) => {
 
 export async function renderPptx(spec, { resolveImage } = {}) {
   const t = themeOf(spec.theme);
+  const L = langOf(spec.lang);
   const pptx = new pptxgen();
   pptx.layout = 'LAYOUT_WIDE';
   pptx.title = spec.title;
@@ -59,7 +61,7 @@ export async function renderPptx(spec, { resolveImage } = {}) {
         slide.addShape(pptx.ShapeType.rect, { x: M, y: 2.2, w: 0.12, h: 2.4, fill: { color: t.accent }, line: { color: t.accent } });
         slide.addText(s.title || spec.title, { ...head, x: M + 0.4, y: 2.05, w: 8.4, h: 1.9, fontSize: sizeFor(s.title, 44, [[40, 38], [70, 32]]), bold: true, color: 'FFFFFF', valign: 'bottom', fit: 'shrink' });
         if (s.subtitle || spec.subtitle) slide.addText(s.subtitle || spec.subtitle, { ...body, x: M + 0.4, y: 4.0, w: 8.4, h: 0.9, fontSize: 20, color: 'CBD5E1', valign: 'top', fit: 'shrink' });
-        const by = [spec.author, new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(new Date())].filter(Boolean).join('  ·  ');
+        const by = [spec.author, new Intl.DateTimeFormat(L.locale, { month: 'long', year: 'numeric' }).format(new Date())].filter(Boolean).join('  ·  ');
         slide.addText(by, { ...body, x: M + 0.4, y: H - 1.2, w: 8, h: 0.4, fontSize: 13, color: t.accent, bold: true });
         break;
       }
@@ -163,7 +165,7 @@ export async function renderPptx(spec, { resolveImage } = {}) {
       case 'closing': {
         slide.background = { color: t.dark };
         slide.addShape(pptx.ShapeType.ellipse, { x: -2, y: 3.4, w: 6, h: 6, fill: { color: t.primary, transparency: 40 }, line: { color: t.primary, transparency: 100 } });
-        slide.addText(s.title || 'Obrigado!', { ...head, x: M, y: 1.8, w: W - 2 * M, h: 1.4, fontSize: 48, bold: true, color: 'FFFFFF', align: 'center', fit: 'shrink' });
+        slide.addText(s.title || L.thanks, { ...head, x: M, y: 1.8, w: W - 2 * M, h: 1.4, fontSize: 48, bold: true, color: 'FFFFFF', align: 'center', fit: 'shrink' });
         slide.addShape(pptx.ShapeType.rect, { x: W / 2 - 0.6, y: 3.25, w: 1.2, h: 0.08, fill: { color: t.accent }, line: { color: t.accent } });
         if (s.subtitle) slide.addText(s.subtitle, { ...body, x: M + 1, y: 3.5, w: W - 2 * M - 2, h: 0.9, fontSize: 20, color: 'CBD5E1', align: 'center', fit: 'shrink' });
         if (s.bullets.length) slide.addText(s.bullets.join('\n'), { ...body, x: M + 2, y: 4.5, w: W - 2 * M - 4, h: 1.6, fontSize: 15, color: 'E2E8F0', align: 'center', valign: 'top', fit: 'shrink' });

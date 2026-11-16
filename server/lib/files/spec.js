@@ -1,6 +1,7 @@
 // KIRA_FILES_V1 — especificação comum dos arquivos gerados pela Kira.
 // O modelo descreve o CONTEÚDO (blocos, planilhas, slides); o servidor monta o arquivo com acabamento profissional.
 import { THEME_NAMES } from './themes.js';
+import { langOf, CURRENCIES } from './language.js';
 
 export const FORMATS = {
   pdf: { ext: 'pdf', mime: 'application/pdf', label: 'PDF', kind: 'document' },
@@ -47,11 +48,14 @@ export function safeFileName(name, ext) {
 }
 
 // Normaliza e limita o que o modelo devolveu. Nunca confia em formato/tamanho vindos do modelo.
-export function normalizeSpec(raw = {}, format) {
+export function normalizeSpec(raw = {}, format, { lang = 'pt', currency } = {}) {
+  const L = langOf(lang);
   const theme = THEME_NAMES.includes(String(raw.theme || '').toLowerCase()) ? String(raw.theme).toLowerCase() : 'corporativo';
   const spec = {
     format,
-    title: str(raw.title, 200) || 'Documento',
+    lang: L.code,
+    currency: CURRENCIES[String(raw.currency || currency || '').toUpperCase()] ? String(raw.currency || currency).toUpperCase() : L.defaultCurrency,
+    title: str(raw.title, 200) || L.document,
     subtitle: str(raw.subtitle, 300),
     author: str(raw.author, 120),
     theme,
@@ -79,25 +83,41 @@ export function normalizeSpec(raw = {}, format) {
       width: Number(c?.width) > 0 ? Math.min(80, Math.max(6, Number(c.width))) : null
     }));
     const rows = grid(s?.rows, 5000, Math.max(1, columns.length || 40));
-    if (!columns.length && rows.length) rows[0].forEach((h, i) => columns.push({ header: h || `Coluna ${i + 1}`, type: 'text', width: null }));
-    spec.sheets.push({ name: str(s?.name, 31).replace(/[\\/*?:[\]]/g, ' ') || `Planilha ${spec.sheets.length + 1}`, description: str(s?.description, 300), columns, rows, totals: Boolean(s?.totals) });
+    if (!columns.length && rows.length) rows[0].forEach((h, i) => columns.push({ header: h || `${L.column} ${i + 1}`, type: 'text', width: null }));
+    spec.sheets.push({ name: str(s?.name, 31).replace(/[\\/*?:[\]]/g, ' ') || `${L.sheet} ${spec.sheets.length + 1}`, description: str(s?.description, 300), columns, rows, totals: Boolean(s?.totals) });
   }
-  for (const sl of (Array.isArray(raw.slides) ? raw.slides : []).slice(0, 40)) {
+  for (const sl of (Array.isArray(raw.slides) ? raw.slides : []).slice(0, 60)) {
     spec.slides.push({
       layout: SLIDE_LAYOUTS.includes(sl?.layout) ? sl.layout : 'bullets',
       title: str(sl?.title, 160), subtitle: str(sl?.subtitle, 300),
-      bullets: list(sl?.bullets, 8, 300),
+      bullets: list(sl?.bullets, 40, 300),
       leftTitle: str(sl?.leftTitle, 100), left: list(sl?.left, 7, 260),
       rightTitle: str(sl?.rightTitle, 100), right: list(sl?.right, 7, 260),
       stats: (Array.isArray(sl?.stats) ? sl.stats : []).slice(0, 4).map(x => ({ value: str(x?.value, 24), label: str(x?.label, 80) })).filter(x => x.value),
       steps: (Array.isArray(sl?.steps) ? sl.steps : []).slice(0, 6).map(x => ({ title: str(x?.title, 60), text: str(x?.text, 160) })).filter(x => x.title),
-      headers: list(sl?.headers, 6, 80), rows: grid(sl?.rows, 8, 6),
+      headers: list(sl?.headers, 6, 80), rows: grid(sl?.rows, 60, 6),
       quote: str(sl?.quote, 400), author: str(sl?.author, 120),
       imagePrompt: str(sl?.imagePrompt, 600),
       notes: str(sl?.notes, 2000)
     });
   }
+  spec.slides = splitOverflowingSlides(spec.slides, L);
   return spec;
+}
+
+// Em vez de cortar conteúdo, slides com tabela ou lista grande demais viram slides de continuação.
+function splitOverflowingSlides(slides, L) {
+  const out = [];
+  for (const s of slides) {
+    if (s.layout === 'table' && s.rows.length > 8) {
+      const headers = s.headers.length ? s.headers : s.rows[0];
+      const rows = s.headers.length ? s.rows : s.rows.slice(1);
+      for (let i = 0; i < rows.length; i += 8) out.push({ ...s, title: i ? `${s.title} ${L.continued}` : s.title, headers, rows: rows.slice(i, i + 8), notes: i ? '' : s.notes });
+    } else if (['bullets', 'image'].includes(s.layout) && s.bullets.length > 8) {
+      for (let i = 0; i < s.bullets.length; i += 8) out.push({ ...s, layout: i ? 'bullets' : s.layout, title: i ? `${s.title} ${L.continued}` : s.title, bullets: s.bullets.slice(i, i + 8), notes: i ? '' : s.notes });
+    } else out.push(s);
+  }
+  return out.slice(0, 60);
 }
 
 export function specProblems(spec) {
@@ -118,6 +138,7 @@ export const CREATE_FILE_TOOL = {
       format: { type: 'STRING', enum: Object.keys(FORMATS) },
       fileName: { type: 'STRING', description: 'Nome curto do arquivo, sem extensão.' },
       title: { type: 'STRING' }, subtitle: { type: 'STRING' }, author: { type: 'STRING' },
+      currency: { type: 'STRING', description: 'Código ISO da moeda (BRL, USD, EUR, MXN, ARS, COP, CLP, PEN, GBP).' },
       theme: { type: 'STRING', enum: THEME_NAMES, description: 'corporativo (negócios), executivo (diretoria, elegante, escuro), moderno (tecnologia), natureza (sustentabilidade, saúde, jardinagem), criativo (hobbies, eventos, culinária, escola), minimalista (acadêmico, sóbrio), oceano (viagens, turismo).' },
       blocks: {
         type: 'ARRAY', description: 'PDF/Word: conteúdo em ordem.',
@@ -155,30 +176,44 @@ export const CREATE_FILE_TOOL = {
   }
 };
 
-export function filePlannerPrompt(request, format) {
+export function filePlannerPrompt(request, format, { lang = 'pt', currency, requirements = [], issues = [], previous = null } = {}) {
   const f = FORMATS[format];
+  const L = langOf(lang);
   const guide = {
-    document: `- Use "blocks": comece com um parágrafo de introdução, organize em seções com heading (level 1/2), parágrafos densos e úteis, listas, ao menos uma tabela quando houver dados comparáveis, e callout para destaques/recomendações. Termine com conclusão ou próximos passos.
-- Tamanho: o que o pedido pedir; se não disser, 2 a 5 páginas de conteúdo real.`,
-    spreadsheet: `- Use "sheets": colunas com o tipo certo (currency para R$, percent para %, date para datas, integer/number para quantidades).
-- Dados plausíveis e consistentes; se o usuário não forneceu números, crie um exemplo realista e diga isso na description da aba.
-- Use fórmulas (=B4*C4, =SUM(D4:D20)) quando o valor depende de outras colunas; marque totals=true quando somar fizer sentido.
-- Para orçamentos, controles e cronogramas inclua todas as linhas necessárias (não corte em 3 exemplos).
-- Em CSV não use fórmulas: escreva os valores já calculados.`,
-    presentation: `- Use "slides": o 1º com layout title e o último com closing. Se o pedido não disser a quantidade, faça de 8 a 12 slides.
-- Varie os layouts conforme o conteúdo: section para abrir partes, bullets (3 a 5 tópicos curtos, máx. 12 palavras cada), two-column para comparações, stats para números de impacto, timeline para etapas/cronogramas, table para dados, quote para citações e image (no máximo 3) com imagePrompt descritivo em inglês.
-- Escreva "notes" (anotações do apresentador) em todos os slides, com o que falar.
-- Textos de slide são curtos; o detalhe vai nas notes.`
+    document: `- Use "blocks". Estrutura: parágrafo de introdução → seções com heading level 1 (e level 2 quando ajudar) → conclusão/próximos passos.
+- Cada seção precisa de conteúdo REAL e completo: pelo menos 2 parágrafos de 50 a 120 palavras, com fatos, exemplos, números e explicações concretas — nunca frases genéricas.
+- Use listas para passos e enumerações, tabela quando houver dados comparáveis (todas as células preenchidas) e callout para dicas/alertas.
+- Se o pedido não disser o tamanho, escreva de 900 a 1800 palavras.`,
+    spreadsheet: `- Use "sheets". Colunas com o tipo certo: currency para dinheiro (moeda ${currency}), percent para %, date para datas (AAAA-MM-DD), integer/number para quantidades.
+- TODAS as linhas com TODAS as colunas preenchidas, com dados plausíveis e coerentes entre si (totais batem, datas em sequência, categorias consistentes).
+- Use fórmulas quando um valor depende de outros (=C4*D4, =SUM(E4:E20)); a 1ª linha de dados é a linha 4. totals=true quando somar fizer sentido.
+- Se o usuário não deu os números, crie um exemplo realista e diga isso na description da aba.
+- Inclua TODAS as linhas pedidas (se pedir 30 itens, são 30 linhas). Em CSV não use fórmulas: escreva os valores calculados.`,
+    presentation: `- Use "slides": o 1º com layout title e o último com closing. Se o pedido não disser a quantidade, faça de 8 a 12 slides; se disser, faça EXATAMENTE essa quantidade.
+- Varie os layouts conforme o conteúdo: section para abrir partes, bullets (3 a 6 tópicos de até 15 palavras, com informação concreta), two-column para comparações (as duas colunas preenchidas), stats (2 a 4 números reais com rótulo), timeline (etapas com título e descrição), table (dados completos), quote e image (no máximo 3, com imagePrompt descritivo em inglês).
+- Escreva "notes" em TODOS os slides: 3 a 6 frases com o que o apresentador deve dizer, explicando e aprofundando o slide.
+- Cada slide deve trazer informação nova e específica do assunto — nada de slides repetidos ou vagos.`
   }[f.kind];
+  const checklist = requirements.length
+    ? `\nCHECKLIST DO PEDIDO (tudo precisa aparecer no arquivo):\n${requirements.map(r => `- ${r.text}${r.count ? ` (quantidade: ${r.count})` : ''}`).join('\n')}`
+    : '';
+  const fixes = issues.length
+    ? `\nA VERSÃO ANTERIOR FOI REPROVADA. Corrija TODOS estes problemas e mantenha o que estava bom:\n${issues.map(i => `- ${i}`).join('\n')}${previous ? `\nVersão anterior (resumo JSON):\n${JSON.stringify(previous).slice(0, 12000)}` : ''}`
+    : '';
   return `Você é a Kira preparando um arquivo ${f.label} profissional (formato "${format}").
-Pedido do usuário:
+
+IDIOMA OBRIGATÓRIO: ${L.name.toUpperCase()}. Escreva TODO o conteúdo do arquivo em ${L.name} — título, subtítulo, textos, tópicos, nomes de abas e colunas, anotações do apresentador e fileName — porque foi o idioma em que o usuário fez o pedido. (Estas instruções estão em português, mas isso não muda o idioma do arquivo.)
+
+PEDIDO DO USUÁRIO (siga com fidelidade total; ele vence qualquer regra genérica abaixo):
 ${String(request).slice(0, 6000)}
+${checklist}
 
 Regras:
-- Conteúdo real, específico e útil no idioma do usuário — nada de "Lorem ipsum", "Texto aqui" ou "Item 1".
-- Se o pedido se referir à conversa anterior ("isso", "essa resposta", "o que conversamos"), use esse conteúdo.
-- Escolha o "theme" que combina com o assunto (negócios → corporativo/executivo; tecnologia → moderno; hobbies, culinária, escola, festas → criativo; saúde/meio ambiente/jardinagem → natureza; viagens → oceano; acadêmico → minimalista).
-- Título claro, subtítulo que contextualiza e fileName curto.
-${guide}
+- Fidelidade: inclua tudo o que foi pedido, com os nomes, números, quantidades, ordem e detalhes que o usuário deu. Não troque o assunto, não omita partes e não invente requisitos.
+- Conteúdo real, específico e útil. Proibido: "Lorem ipsum", "Texto aqui", "Item 1", "[inserir]", reticências no lugar de conteúdo.
+- Se o pedido se referir à conversa anterior ("isso", "essa resposta", "lo que hablamos"), use esse conteúdo.
+- Escolha o "theme" que combina com o assunto (negócios → corporativo/executivo; tecnologia → moderno; hobbies, culinária, escola, festas → criativo; saúde/meio ambiente → natureza; viagens → oceano; acadêmico → minimalista).
+- currency = "${currency}" salvo se o pedido citar outra moeda.
+${guide}${fixes}
 Chame create_file com format="${format}".`;
 }

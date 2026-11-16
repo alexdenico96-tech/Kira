@@ -8,7 +8,12 @@ const STOPWORDS = new Set(('a o as os um uma uns umas de do da dos das no na nos
   'projeto sistema aplicação aplicacao app site página pagina tela seção secao parte área area onde quando ' +
   'isso esse essa este esta ele ela eles elas meu minha seu sua nosso nossa também tambem então entao assim ' +
   'react vite next vue angular svelte typescript javascript html css componente componentes arquivo arquivos ' +
-  'the and with for from that this have should must create build make').split(/\s+/));
+  'the and with for from that this have should must create build make ' +
+  // espanhol
+  'el la los las un una unos unas del al y o en por con sin sobre que se es son est[aá] mi mis tu tus su sus crea crear haz hacer genera generar ' +
+  'quiero quisiera necesito puedes podr[ií]as dame archivo hoja presentaci[oó]n diapositivas muy m[aá]s tambi[eé]n ' +
+  // inglês
+  'a an of in on to is are be please want need can could give me my your about into using').split(/\s+/).map(w => w.replace(/\[(.)(.)\]/g, '$1')));
 
 export const normalizeText = value => String(value || '').toLowerCase()
   .normalize('NFD').replace(/[̀-ͯ]/g, '');
