@@ -116,6 +116,16 @@ export async function sendMessageStream(token, message, conversationId, { image,
   return result.body;
 }
 
+// KIRA_FILES_V1: baixa um arquivo gerado (precisa do token, por isso não é um link direto).
+export async function downloadFile(token, id) {
+  const res = await fetch(`${BASE}/files/${encodeURIComponent(id)}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || "Não consegui baixar o arquivo.");
+  }
+  return res.blob();
+}
+
 export const getArtifact = (token, artifactId, version) =>
   request(`/artifacts/${artifactId}${version ? `?version=${version}` : ""}`, { token });
 

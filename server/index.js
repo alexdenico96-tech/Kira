@@ -5,6 +5,8 @@ import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { randomUUID } from "node:crypto";
+import fsp from "node:fs/promises";
 import { signToken, requireAuth } from "./lib/auth.js";
 import { authLimit } from "./lib/authLimits.js";
 import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
@@ -29,6 +31,7 @@ import { progressStream } from "./lib/progressStream.js";
 import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
 import { buildDesignBrief } from "./lib/designDirection.js";
 import { currentDateLine, needsWebSearch, webSearchAnswer, looksOutdated } from "./lib/webSearch.js";
+import { FORMATS as FILE_FORMATS, detectFileRequest, filePlannerPrompt, renderFile } from "./lib/files/index.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
 import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
@@ -69,7 +72,9 @@ import {
   findRecentCacheCandidates,
   putCachedResponse,
   saveVersionWithOperations,
-  getVersionChanges
+  getVersionChanges,
+  saveGeneratedFile,
+  getGeneratedFile
 } from "./lib/store.js";
 
 dotenv.config();
@@ -128,6 +133,26 @@ Anexos: quando receber imagem ou áudio, baseie a resposta no conteúdo efetivam
 Markdown puro; sem HTML decorativo.
 Precisão e honestidade técnica: nunca afirme ter inspecionado código, arquitetura, banco, logs ou configurações que não foram fornecidos. Sem evidência, apresente riscos como hipóteses ("pode ocorrer", "verifique se") e peça o código relevante para confirmar problemas específicos. Diferencie explicitamente fatos verificados, hipóteses e recomendações. Para SQL injection, priorize consultas parametrizadas; validação de entrada é defesa complementar. Não cite nomes internos de ferramentas (como create_document ou update_artifact) nas respostas comuns. Não alegue ter executado testes ou verificado arquivos sem fazê-lo.`;
 
+// KIRA_FILES_V1: download dos arquivos gerados (só o dono do arquivo).
+app.get("/api/files/:id", requireAuth, async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(404).json({ error: "Arquivo não encontrado." });
+  try {
+    const file = await getGeneratedFile(req.user.id, req.params.id);
+    if (!file) return res.status(404).json({ error: "Arquivo não encontrado." });
+    const ascii = file.name.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "");
+    res.set({
+      "Content-Type": file.mime,
+      "Content-Length": String(file.size),
+      "Content-Disposition": `${req.query.inline === "1" ? "inline" : "attachment"}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.name)}`,
+      "Cache-Control": "private, max-age=3600"
+    });
+    res.end(file.data);
+  } catch (err) {
+    console.warn("[kira-file] download falhou:", err.message);
+    res.status(500).json({ error: "Não consegui abrir o arquivo." });
+  }
+});
+
 // KIRA_PROJECT_IMAGES_V1: imagens dos projetos geradas e guardadas pelo servidor.
 // Rota pública (tags <img> não enviam token); só serve IDs registrados pelo próprio servidor.
 app.get("/api/project-images/:id", async (req,res)=>{
@@ -143,6 +168,62 @@ app.get("/api/project-images/:id", async (req,res)=>{
     res.status(502).end();
   }
 });
+// KIRA_FILES_V1: planeja o conteúdo (Gemini → Groq), gera imagens dos slides, monta e salva o arquivo.
+const formatBytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`;
+
+function parseLooseJson(text) {
+  const raw = String(text || "").replace(/^```(?:json)?/i, "").replace(/```\s*$/, "").trim();
+  const start = raw.indexOf("{"), end = raw.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  try { return JSON.parse(raw.slice(start, end + 1)); } catch { return null; }
+}
+
+async function createKiraFile({ format, request, history = [], groqHistory = [], userId, step = () => {}, presetSpec = null }) {
+  const label = FILE_FORMATS[format].label;
+  let spec = presetSpec;
+  let provider = "gemini";
+  if (!spec) {
+    step("file-plan", `Planejando o conteúdo do ${label}`);
+    try {
+      const data = await callGemini({ systemInstruction: systemPrompt(), contents: [...history.slice(-8), { role: "user", parts: [{ text: filePlannerPrompt(request, format) }] }], forceFunctionName: "create_file" });
+      spec = (data?.candidates?.[0]?.content?.parts || []).find(p => p.functionCall?.name === "create_file")?.functionCall?.args || null;
+    } catch (error) {
+      console.warn("[kira-file] planejamento no Gemini falhou:", error.status || error.message);
+    }
+    if (!spec && GROQ_ENABLED) {
+      provider = "groq";
+      const text = await callGroqFallback({
+        systemInstruction: `${systemPrompt()}\nResponda SOMENTE com um objeto JSON válido, sem texto antes ou depois.`,
+        message: `${filePlannerPrompt(request, format)}\nEm vez de chamar a função, responda com o JSON dos argumentos de create_file (campos: format, fileName, title, subtitle, author, theme, ${FILE_FORMATS[format].kind === "presentation" ? "slides" : FILE_FORMATS[format].kind === "spreadsheet" ? "sheets" : "blocks"}).`,
+        history: groqHistory
+      });
+      spec = parseLooseJson(text);
+    }
+    if (!spec) { const e = new Error("Não consegui planejar o conteúdo do arquivo agora."); e.status = 503; throw e; }
+  }
+  const parts = spec.slides?.length ? `${spec.slides.length} slides` : spec.sheets?.length ? `${spec.sheets.length} aba(s)` : `${(spec.blocks || []).filter(b => b.type === "heading").length} seções`;
+  step("file-plan", "Conteúdo planejado", `${spec.title || ""} · ${parts}`, "done");
+
+  const imageSlides = format === "pptx" ? (spec.slides || []).filter(s => s?.layout === "image" && s.imagePrompt).length : 0;
+  if (imageSlides) step("file-images", `Gerando ${Math.min(3, imageSlides)} imagem(ns) para os slides`);
+  const resolveImage = async prompt => {
+    const url = await generateKiraImage(prompt, { plannedPrompt: `${prompt}. Professional, high quality, no text, no watermark.`, layout: { width: 896, height: 1152, name: "vertical" } });
+    const file = path.join(__dirname, "generated-images", path.basename(url));
+    const bytes = await fsp.readFile(file);
+    fsp.unlink(file).catch(() => {});
+    return { bytes, mimeType: file.endsWith(".png") ? "image/png" : file.endsWith(".webp") ? "image/webp" : "image/jpeg" };
+  };
+  if (imageSlides) step("file-images", "Imagens prontas", "", "done");
+
+  step("file-render", `Montando o arquivo ${label}`);
+  const rendered = await renderFile(spec, format, { resolveImage });
+  const saved = await saveGeneratedFile(userId, { id: randomUUID(), name: rendered.fileName, format, mime: rendered.mime, buffer: rendered.buffer, summary: rendered.summary });
+  step("file-render", `${label} pronto · ${rendered.summary}`, formatBytes(saved.size), "done");
+  console.info(`[kira-file] format=${format} provider=${provider} size=${saved.size} summary="${rendered.summary}"`);
+  const file = { id: saved.id, name: saved.name, format, label, size: saved.size, summary: rendered.summary, title: rendered.spec.title, theme: rendered.spec.theme };
+  return { file, provider, reply: `Pronto! Criei **${rendered.spec.title}** em ${label} (${rendered.summary}).${rendered.spec.subtitle ? `\n\n${rendered.spec.subtitle}` : ""}\n\nÉ só baixar no cartão abaixo. Se quiser, posso mudar o tema, o tamanho ou o conteúdo.` };
+}
+
 // KIRA_DEVELOPER_FIX_PASS_V1: prompt de correção cirúrgica (só arquivos com problema + requisitos faltantes).
 function projectFixPrompt(request, evaluation, requirements) {
   const files = evaluation.files;
@@ -608,10 +689,12 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
     const previousImageUrl = recentAssistant?.imageUrl || null;
     const imageFollowUp = Boolean(!image?.data && previousImageUrl && isImageEditFollowUp(textMessage));
     const referenceImageEdit = Boolean(image?.data && isReferenceImageRequest(textMessage));
-    const wantsImage = imageFollowUp || referenceImageEdit || (!image?.data && kiraWantsGeneratedImage(textMessage));
-    const editingArtifact = rawEditingArtifact && !imageFollowUp;
-    const wantsArtifact = rawWantsArtifact && !imageFollowUp;
-    const intentKind = wantsImage ? "image" : rawIntentKind;
+    // KIRA_FILES_V1: "crie uma apresentação/planilha/PDF..." gera arquivo para download.
+    const fileRequest = !image?.data && !imageFollowUp ? detectFileRequest(textMessage) : null;
+    const wantsImage = !fileRequest && (imageFollowUp || referenceImageEdit || (!image?.data && kiraWantsGeneratedImage(textMessage)));
+    const editingArtifact = rawEditingArtifact && !imageFollowUp && !fileRequest;
+    const wantsArtifact = rawWantsArtifact && !imageFollowUp && !fileRequest;
+    const intentKind = fileRequest ? "file" : wantsImage ? "image" : rawIntentKind;
     console.info(`[kira-intent] kind=${intentKind}`);
     const complexity = classifyKiraComplexity(textMessage, intentKind);
     console.info(`[kira-complexity] level=${complexity} path=${complexity==="advanced"?"groq-first":complexity==="project"?"workspace":"fast-chat"}`);
@@ -623,7 +706,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
     const route = routeRequest({message:textMessage,image,audio:null,editingArtifact,wantsArtifact,projectChars:estimateChars(existingArtifact?.files||[])});
 
     // Cache conservador: apenas conversa simples, sem anexos/projeto. Exact match + similaridade muito alta.
-    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage) && !needsWebSearch(textMessage)){
+    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && !image && !audio && !kiraWantsGeneratedImage(textMessage) && !needsWebSearch(textMessage) && !detectFileRequest(textMessage)){
       const fp=cacheFingerprint(textMessage);
       let cached=await getCachedResponse(fp);
       if(!cached){
@@ -642,6 +725,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
     let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
     let fidelityNote = "";
     let searchInfo = null; // fontes da pesquisa na web, quando houver
+    let fileMeta = null; // arquivo gerado (PDF, Word, Excel, CSV, PowerPoint)
     let requirements = []; // checklist de fidelidade (também usado no fallback Groq)
     const withProjectImages = async files => {
       const result = await rewriteProjectImages(files, publicBaseUrl(req));
@@ -681,6 +765,12 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
           reply += `\n\nConferi a imagem e estes detalhes podem não ter saído como você pediu: ${v.missing.slice(0, 4).join("; ")}. Quer que eu tente de novo?`;
         }
         console.info(`[kira-image] fidelity attempts=${result.attempts} score=${v?.score ?? "n/a"} edit=${Boolean(previous)} reference=${Boolean(reference)}`);
+      }
+      if (!reply && fileRequest) {
+        const made = await createKiraFile({ format: fileRequest.format, request: textMessage, history, groqHistory, userId: req.user.id, step });
+        fileMeta = made.file;
+        reply = made.reply;
+        selectedProvider = made.provider;
       }
       // KIRA_WEB_SEARCH_V1: perguntas sobre o presente são respondidas com pesquisa real na web.
       if (!reply && !wantsArtifact && !editingArtifact && !wantsImage && !image?.data && needsWebSearch(textMessage)) {
@@ -766,7 +856,13 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       const parts = candidate?.content?.parts || [];
       const functionCall = parts.find((p) => p.functionCall)?.functionCall;
 
-      if (functionCall?.name === "generate_image") {
+      if (functionCall?.name === "create_file") {
+        // O modelo decidiu gerar um arquivo no meio da conversa ("me manda isso em PDF").
+        const format = FILE_FORMATS[functionCall.args?.format] ? functionCall.args.format : "pdf";
+        const made = await createKiraFile({ format, request: textMessage, presetSpec: functionCall.args, userId: req.user.id, step });
+        fileMeta = made.file;
+        reply = made.reply;
+      } else if (functionCall?.name === "generate_image") {
         const prompt = functionCall.args?.prompt || textMessage;
         const result = await createFaithfulImage({ request: prompt, ask: askRequirementsModel, askVision: askVisionModel, generate: generateKiraImage, onProgress: step });
         imageUrl = result.url;
@@ -1111,20 +1207,20 @@ if (syntax.issues.length) {
 
     if(responseArtifactId) await setActiveProject(req.user.id,conv.id,responseArtifactId);
     if (artifactFiles?.length) step('save', responseArtifactId ? `Projeto pronto · v${artifactVersion || 1}` : 'Projeto pronto', '', 'done');
-    else if (!imageUrl && !searchInfo) step('think', 'Resposta pronta', '', 'done');
+    else if (!imageUrl && !searchInfo && !fileMeta) step('think', 'Resposta pronta', '', 'done');
     const hadAttachment = Boolean(image?.data || audio?.data);
 
     await appendMessages(req.user.id, conv.id, [
       { role: "user", content: textMessage, hadAttachment },
       { role: "assistant", content: reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion,
-        searched: Boolean(searchInfo), searchQueries: searchInfo?.queries || [], visitedSites: searchInfo?.sources || [], searchEntryPoint: searchInfo?.entryPoint || null }
+        searched: Boolean(searchInfo), searchQueries: searchInfo?.queries || [], visitedSites: searchInfo?.sources || [], searchEntryPoint: searchInfo?.entryPoint || null, file: fileMeta }
     ]);
 
-    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio && !searchInfo){
+    if(history.length===0 && route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio && !searchInfo && !fileMeta){
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
     res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false,
-      sources: searchInfo?.sources || [], searchQueries: searchInfo?.queries || [], searchEntryPoint: searchInfo?.entryPoint || "" });
+      sources: searchInfo?.sources || [], searchQueries: searchInfo?.queries || [], searchEntryPoint: searchInfo?.entryPoint || "", file: fileMeta });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro interno no servidor.", details: String(err) });

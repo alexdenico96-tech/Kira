@@ -7,6 +7,7 @@ import ImageGenerationAnimation from "./ImageGenerationAnimation.jsx";
 import KiraProgress, { KiraTrace } from "./KiraProgress.jsx";
 import TypewriterMarkdown from "./TypewriterMarkdown.jsx";
 import SourcesBar from "./SourcesBar.jsx";
+import FileCard from "./FileCard.jsx";
 import { linkCitations } from "../lib/typewriter.js";
 
 // Fontes vêm na resposta nova (sources) ou do histórico salvo (visitedSites com objetos).
@@ -152,7 +153,7 @@ function GeneratedImage({ src }) {
 }
 
 // Corpo da resposta: escreve o texto e só então mostra as fontes (como no Gemini).
-function AssistantAnswer({ m, onTick }) {
+function AssistantAnswer({ m, onTick, token }) {
   const [typed, setTyped] = useState(!m.reveal);
   const sources = sourcesOf(m);
   return (
@@ -166,6 +167,7 @@ function AssistantAnswer({ m, onTick }) {
       {typed && (
         <SourcesBar sources={sources} queries={m.searchQueries || []} entryPoint={m.searchEntryPoint || ""} />
       )}
+      {typed && m.file && <FileCard file={m.file} token={token} />}
     </>
   );
 }
@@ -176,6 +178,7 @@ export default function MessageThread({
   loadingLabel,
   generatingImage = false,
   progress,
+  token,
   onOpenArtifact
 }) {
   const endRef = useRef(null);
@@ -233,7 +236,7 @@ export default function MessageThread({
               ) : (
                 <>
                   <KiraTrace trace={m.trace} />
-                  <AssistantAnswer m={m} onTick={followTyping} />
+                  <AssistantAnswer m={m} onTick={followTyping} token={token} />
 
                   {m.imageUrl && (
                     <GeneratedImage src={m.imageUrl} />

@@ -1,4 +1,5 @@
 // KIRA_GEMINI_DISCOVERY_V1
+import { CREATE_FILE_TOOL } from "./files/spec.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -105,7 +106,8 @@ const HOME_ASSISTANT_TOOL = {
 };
 
 function buildTools() {
-  const functionDeclarations = [IMAGE_TOOL, DOCUMENT_TOOL, UPDATE_ARTIFACT_TOOL];
+  // KIRA_FILES_V1: create_file gera PDF, Word, Excel, CSV e PowerPoint.
+  const functionDeclarations = [IMAGE_TOOL, DOCUMENT_TOOL, UPDATE_ARTIFACT_TOOL, CREATE_FILE_TOOL];
   if (HOME_ASSISTANT_ENABLED) functionDeclarations.push(HOME_ASSISTANT_TOOL);
   return [{ functionDeclarations }];
 }

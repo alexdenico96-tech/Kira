@@ -261,6 +261,7 @@ export default function App() {
           sources: res.sources || [],
           searchQueries: res.searchQueries || [],
           searchEntryPoint: res.searchEntryPoint || "",
+          file: res.file || null,
           imageUrl: res.imageUrl,
           documentName: res.documentName,
           documentContent: res.documentContent,
@@ -378,6 +379,7 @@ export default function App() {
                   loadingLabel={loadingLabel}
                   generatingImage={generatingImage}
                   progress={progress}
+                  token={session.token}
                   onOpenArtifact={setActiveArtifact}
                 />
               </main>

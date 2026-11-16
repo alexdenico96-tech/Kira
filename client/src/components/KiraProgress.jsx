@@ -23,6 +23,7 @@ const TITLES = {
   vision: "Kira está analisando a imagem",
   audio: "Kira está ouvindo",
   search: "Kira está pesquisando na web",
+  file: "Kira está criando seu arquivo",
   chat: "Kira está pensando"
 };
 
@@ -33,6 +34,7 @@ const FIRST_STEP = {
   vision: "Analisando a imagem",
   audio: "Transcrevendo o áudio",
   search: "Pesquisando na web",
+  file: "Planejando o conteúdo",
   chat: "Pensando na resposta"
 };
 

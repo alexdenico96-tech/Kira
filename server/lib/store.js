@@ -66,6 +66,21 @@ export async function initStore() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_name TEXT;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_files JSONB;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS search_entry_point TEXT;`);
+  // KIRA_FILES_V1: arquivos gerados ficam no banco (o disco do Render é apagado a cada deploy).
+  await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_meta JSONB;`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS generated_files (
+      id UUID PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      format TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      summary TEXT,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS generated_files_user_idx ON generated_files(user_id, created_at DESC);`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;`);
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_version INTEGER NOT NULL DEFAULT 0;`);
   await pool.query(`CREATE TABLE IF NOT EXISTS auth_attempt_limits (key_hash TEXT PRIMARY KEY, attempts INTEGER NOT NULL, reset_at TIMESTAMPTZ NOT NULL);`);
@@ -297,7 +312,8 @@ export async function getConversation(userId, conversationId) {
             artifact_files AS "artifactFiles",
             artifact_id AS "artifactId",
             artifact_version AS "artifactVersion",
-            search_entry_point AS "searchEntryPoint"
+            search_entry_point AS "searchEntryPoint",
+            file_meta AS "file"
      FROM messages WHERE conversation_id = $1 ORDER BY id ASC`,
     [conversationId]
   );
@@ -321,8 +337,8 @@ export async function appendMessages(userId, conversationId, newMessages) {
 
   for (const m of newMessages) {
     await pool.query(
-      `INSERT INTO messages (conversation_id, role, content, searched, search_queries, visited_sites, reasoning, search_disabled, image_url, had_attachment, document_name, document_content, artifact_name, artifact_files, artifact_id, artifact_version, search_entry_point)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+      `INSERT INTO messages (conversation_id, role, content, searched, search_queries, visited_sites, reasoning, search_disabled, image_url, had_attachment, document_name, document_content, artifact_name, artifact_files, artifact_id, artifact_version, search_entry_point, file_meta)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
       [
         conversationId,
         m.role,
@@ -340,7 +356,8 @@ export async function appendMessages(userId, conversationId, newMessages) {
         m.artifactFiles ? JSON.stringify(m.artifactFiles) : null,
         m.artifactId || null,
         m.artifactVersion || null,
-        m.searchEntryPoint || null
+        m.searchEntryPoint || null,
+        m.file ? JSON.stringify(m.file) : null
       ]
     );
   }
@@ -512,4 +529,21 @@ export async function saveVersionWithOperations(userId,artifactId,files,summary,
 export async function getVersionChanges(userId,artifactId,version){
   const {rows}=await pool.query(`SELECT av.change_manifest AS "changeManifest",av.files,av.summary FROM artifact_versions av JOIN artifacts a ON a.id=av.artifact_id WHERE av.artifact_id=$1 AND av.version=$2 AND a.user_id=$3`,[artifactId,version,userId]);
   return rows[0]||null;
+}
+
+// KIRA_FILES_V1
+export async function saveGeneratedFile(userId, { id, name, format, mime, buffer, summary }) {
+  await pool.query(
+    `INSERT INTO generated_files (id, user_id, name, format, mime, size, summary, data) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    [id, String(userId), name, format, mime, buffer.length, summary || null, buffer]
+  );
+  return { id, name, format, mime, size: buffer.length, summary: summary || "" };
+}
+
+export async function getGeneratedFile(userId, id) {
+  const { rows } = await pool.query(
+    `SELECT id, name, format, mime, size, data FROM generated_files WHERE id = $1 AND user_id = $2`,
+    [id, String(userId)]
+  );
+  return rows[0] || null;
 }
