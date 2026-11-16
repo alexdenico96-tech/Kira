@@ -1,4 +1,4 @@
-const CACHE_NAME = "kira-shell-v2";
+const CACHE_NAME = "kira-shell-v3";
 const APP_SHELL = ["/", "/index.html", "/logo.png", "/favicon-192.png", "/favicon-512.png", "/manifest.json"];
 
 self.addEventListener("install", (event) => {

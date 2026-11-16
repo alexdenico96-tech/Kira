@@ -217,6 +217,16 @@ export default function MessageThread({
   <KiraAudioMessage src={m.audioPreviewUrl} />
 )}
 
+              {m.voice?.heard && (
+                <div className="kira-voice-transcript">
+                  <span className="kira-voice-transcript__label">A Kira ouviu</span>
+                  <p>“{m.voice.heard}”</p>
+                  {m.voice.cleaned && m.voice.request !== m.voice.heard && (
+                    <p className="kira-voice-transcript__request"><span>Pedido entendido:</span> {m.voice.request}</p>
+                  )}
+                </div>
+              )}
+
               {m.content && (
                 <div className="kira-bubble-user border border-line px-4 py-2.5 text-[15px] text-paper font-body whitespace-pre-wrap leading-relaxed">
                   {m.content}

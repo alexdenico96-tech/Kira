@@ -1,18 +1,38 @@
 {
   "name": "Kira - Chat com IA",
   "short_name": "Kira",
-  "description": "Chat com IA, busca na web em tempo real e histórico de conversas",
+  "description": "Chat com IA, pesquisa na web com fontes, projetos com preview e arquivos profissionais",
   "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#060B18",
-  "theme_color": "#060B18",
+  "background_color": "#0B0614",
+  "theme_color": "#0B0614",
   "orientation": "portrait-primary",
   "icons": [
-    { "src": "/favicon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/favicon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/favicon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
-    { "src": "/favicon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    {
+      "src": "/favicon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }

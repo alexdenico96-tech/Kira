@@ -99,11 +99,11 @@ export default function Sidebar({
           {!compact && (
             <div className="flex min-w-0 items-center gap-3">
               <div className="relative">
-                <div className="absolute inset-0 rounded-xl bg-neon/15 blur-md" />
+                <div className="absolute inset-0 rounded-xl bg-[#7c3aed]/30 blur-md" />
                 <img
                   src="/logo.png"
                   alt="Kira"
-                  className="relative h-10 w-10 rounded-xl border border-line object-cover"
+                  className="relative h-10 w-10 object-contain"
                 />
               </div>
 

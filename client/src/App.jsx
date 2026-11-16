@@ -178,9 +178,9 @@ export default function App() {
       role: "user",
       content:
         value ||
-        (image
+        (image && !audio
           ? "Descreva essa imagem."
-          : "Ouça esse áudio e responda.")
+          : "") // só áudio: o balão mostra o que a Kira ouviu (transcrição)
     };
 
     if (image) {
@@ -253,7 +253,10 @@ export default function App() {
       setActiveId(res.conversationId);
 
       setMessages((m) => [
-        ...m,
+        // KIRA_AUDIO_FIDELITY_V1: mostra no áudio do usuário o que a Kira ouviu.
+        ...(res.voice
+          ? m.map((msg, index) => (index === m.length - 1 && msg.role === "user" ? { ...msg, voice: res.voice } : msg))
+          : m),
         {
           role: "assistant",
           content: res.reply,

@@ -292,18 +292,18 @@ export async function callHomeAssistant({ domain, service, entity_id }) {
 export { GEMINI_MODEL };
 
 // Transcreve o áudio antes da classificação de intenção da Kira.
-export async function transcribeKiraAudio(audio) {
+export async function transcribeKiraAudio(audio, { context = "" } = {}) {
   if (!audio?.data) {
     throw new Error("Áudio não fornecido.");
   }
 
   const result = await callGemini({
     systemInstruction:
-      "Você é um transcritor de áudio. Transcreva fielmente o que foi falado, preservando instruções, nomes de arquivos, tecnologias e pedidos. Responda somente com a transcrição, sem comentários, explicações ou executar a solicitação.",
+      "Você é um transcritor de áudio profissional. Transcreva fielmente, palavra por palavra, o que foi falado, no idioma original e com pontuação correta. Preserve números, nomes próprios, tecnologias (React, Excel, PowerPoint...), cores e quantidades exatamente como ditos. Não traduza, não resuma, não corrija o conteúdo e não execute o pedido. Se não houver fala, responda com uma string vazia. Responda somente com a transcrição.",
     contents: [{
       role: "user",
       parts: [
-        { text: "Transcreva integralmente este áudio em seu idioma original." },
+        { text: `Transcreva integralmente este áudio em seu idioma original.${context ? `\nContexto da conversa (só para acertar termos, não transcreva): ${String(context).slice(-400)}` : ""}` },
         {
           inlineData: {
             mimeType: audio.mimeType || "audio/webm",

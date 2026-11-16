@@ -196,7 +196,7 @@ html.light {
   flex-shrink: 0;
   width: 30px;
   height: 30px;
-  border-radius: 999px;
+  border-radius: 30%; /* mesmo formato do ícone da Kira (quadrado arredondado) */
 }
 
 .kira-avatar img {
@@ -755,3 +755,30 @@ html:has(.kira-landing), body:has(.kira-landing) { overflow-y: auto !important; 
     radial-gradient(circle at 80% 100%, color-mix(in srgb, var(--kira-light-2) 20%, transparent), transparent 55%),
     var(--kira-panel-glass);
 }
+
+/* ---------- TRANSCRIÇÃO DO ÁUDIO ---------- */
+
+.kira-voice-transcript {
+  max-width: 420px;
+  padding: 9px 13px;
+  border-radius: 16px 16px 6px 16px;
+  border: 1px dashed color-mix(in srgb, var(--kira-light-2) 45%, var(--kira-line));
+  background: color-mix(in srgb, var(--kira-light-2) 8%, transparent);
+  font-size: 13px;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--kira-text) 85%, transparent);
+  animation: kiraStepIn .4s ease both;
+}
+
+.kira-voice-transcript__label {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--kira-light-2);
+}
+
+.kira-voice-transcript__request { margin-top: 6px; color: var(--kira-text); }
+.kira-voice-transcript__request span { font-weight: 600; color: var(--kira-light-3); }

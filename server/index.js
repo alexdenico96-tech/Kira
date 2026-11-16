@@ -34,7 +34,8 @@ import { currentDateLine, needsWebSearch, webSearchAnswer, looksOutdated } from 
 import { FORMATS as FILE_FORMATS, detectFileRequest, filePlannerPrompt, renderFile } from "./lib/files/index.js";
 import { inspectProjectSyntax } from "./lib/syntaxGate.js";
 import { repairProjectSyntax } from "./lib/syntaxRepair.js";
-import { transcribeKiraAudio as transcribeAudio } from "./lib/kiraTranscription.js";
+import { transcribeKiraAudioDetailed } from "./lib/kiraTranscription.js";
+import { cleanVoiceRequest } from "./lib/voiceRequest.js";
 import helmet from "helmet";
 // KIRA_PACKAGE_JSON_REPAIR_V1_INTEGRATION
 import { repairPackageJsonNewlines } from "./lib/packageJsonRepair.js";
@@ -288,6 +289,17 @@ async function geminiWebSearch(systemInstruction, contents) {
     }
   }
   throw lastError;
+}
+
+// KIRA_AUDIO_FIDELITY_V1: reescreve a fala como pedido escrito (modelo rápido; Gemini de reserva).
+async function askVoiceModel(prompt) {
+  const instruction = "Você reescreve transcrições de voz como pedidos escritos, sem responder, acrescentar ou resumir nada.";
+  if (GROQ_ENABLED) {
+    try { return await callGroqFallback({ systemInstruction: instruction, message: prompt, history: [] }); }
+    catch (err) { console.warn("[kira-audio] limpeza no groq falhou:", err.status || err.message); }
+  }
+  const data = await callGemini({ systemInstruction: instruction, contents: [{ role: "user", parts: [{ text: prompt }] }] });
+  return (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join("\n");
 }
 
 async function askRequirementsModel(prompt) {
@@ -635,6 +647,7 @@ function kiraWantsGeneratedImage(value) {
 
 app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
   const step = req.progress; // KIRA_PROGRESS_STREAM_V1: fases visíveis no chat
+  let voiceInfo = null; // KIRA_AUDIO_FIDELITY_V1: o que a Kira ouviu e o pedido usado
   const chatStartedAt = Date.now();
   res.once("finish", () => console.info(`[kira-chat] status=${res.statusCode} duration_ms=${Date.now()-chatStartedAt}`));
   try {
@@ -655,11 +668,24 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
 
     if (audio?.data) {
       try {
+        // KIRA_AUDIO_FIDELITY_V1: contexto recente ajuda o Whisper a acertar termos e idioma.
         step('listen', 'Transcrevendo o áudio');
-        const transcript = await transcribeAudio(audio);
-        step('listen', 'Áudio transcrito', '', 'done');
-        textMessage = [message, transcript].filter(Boolean).join("\n");
-        console.info(`[kira-audio] transcribed chars=${transcript.length}`);
+        const earlyConv = conversationId ? await getConversation(req.user.id, conversationId).catch(() => null) : null;
+        const context = [...(earlyConv?.messages || [])].slice(-4).map(m => String(m.content || "").slice(0, 160)).join(" ");
+        const heard = await transcribeKiraAudioDetailed(audio, { context: [context, message].filter(Boolean).join(" ") });
+        if (!heard.text) {
+          return res.status(422).json({ error: "Não consegui ouvir sua fala com clareza. Tente gravar de novo, mais perto do microfone." });
+        }
+        step('listen', 'Áudio transcrito', `“${heard.text.length > 90 ? `${heard.text.slice(0, 90)}…` : heard.text}”`, 'done');
+        let spoken = heard.text;
+        const cleanup = await cleanVoiceRequest(spoken, askVoiceModel);
+        if (cleanup.cleaned) {
+          spoken = cleanup.text;
+          step('listen-clean', 'Pedido falado organizado', 'autocorreções e hesitações aplicadas', 'done');
+        }
+        textMessage = [message, spoken].filter(Boolean).join("\n");
+        voiceInfo = { heard: heard.text, request: spoken, cleaned: cleanup.cleaned, provider: heard.provider, language: heard.language, confidence: heard.confidence };
+        console.info(`[kira-audio] provider=${heard.provider} chars=${heard.text.length} cleaned=${cleanup.cleaned}`);
       } catch (audioError) {
         console.warn("[kira-audio] transcription_failed", audioError.status || audioError.message);
         return res.status(502).json({
@@ -1220,7 +1246,7 @@ if (syntax.issues.length) {
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
     res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false,
-      sources: searchInfo?.sources || [], searchQueries: searchInfo?.queries || [], searchEntryPoint: searchInfo?.entryPoint || "", file: fileMeta });
+      sources: searchInfo?.sources || [], searchQueries: searchInfo?.queries || [], searchEntryPoint: searchInfo?.entryPoint || "", file: fileMeta, voice: voiceInfo });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erro interno no servidor.", details: String(err) });

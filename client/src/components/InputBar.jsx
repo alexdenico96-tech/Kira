@@ -77,8 +77,12 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      // KIRA_AUDIO_FIDELITY_V1: áudio limpo = transcrição fiel (sem eco/ruído, volume estável, Opus em boa qualidade).
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 }
+      });
+      const preferred = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/mp4", "audio/webm"].find(type => window.MediaRecorder?.isTypeSupported?.(type));
+      const recorder = new MediaRecorder(stream, { ...(preferred ? { mimeType: preferred } : {}), audioBitsPerSecond: 128000 });
       audioChunksRef.current = [];
       recorder.ondataavailable = e => {
         if (e.data.size > 0) audioChunksRef.current.push(e.data);
@@ -93,7 +97,7 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
             return;
           }
           const sent = await onSubmit(value.trim(), {
-            image: pendingImage ? { data: pendingImage.base64, mimeType: pendingImage.mimeType } : undefined,
+            image: pendingImage ? { data: pendingImage.base64, mimeType: pendingImage.mimeType, ...(pendingImage.reference ? { reference: pendingImage.reference } : {}) } : undefined,
             audio: { data: base64, mimeType: blob.type }
           });
           if (sent) {
