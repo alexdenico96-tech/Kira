@@ -48,6 +48,8 @@ export function inspectFileSpec(spec, request, { lang = 'pt', requirements = [] 
       if (!s.notes || s.notes.split(/\s+/).length < 15) issues.push(`Slide ${i + 1} ("${s.title}") precisa de anotações do apresentador com pelo menos 2 frases.`);
       if (s.layout === 'two-column' && (!s.left.length || !s.right.length)) issues.push(`Slide ${i + 1} (comparação) tem uma das colunas vazia.`);
     });
+    if (n >= 3 && spec.slides[0]?.layout !== 'title') issues.push('O primeiro slide deve usar o layout title (capa).');
+    if (n >= 3 && spec.slides[n - 1]?.layout !== 'closing') issues.push('O último slide deve usar o layout closing (agradecimento, próximos passos ou contato).');
   }
   if (kind === 'spreadsheet') {
     if (counts.sheets && spec.sheets.length < counts.sheets) issues.push(`O usuário pediu ${counts.sheets} abas e há ${spec.sheets.length}.`);

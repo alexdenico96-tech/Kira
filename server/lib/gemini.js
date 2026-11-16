@@ -158,7 +158,8 @@ async function requestGemini({ systemInstruction, contents, apiKey, forceFunctio
 }
 
 let keyIndex = 0;
-let overloadUntil = 0;
+// KIRA_GEMINI_FAILOVER_V1: sobrecarga (503) marcada por modelo, não para o Gemini inteiro.
+const overloadedModels = new Map();
 const discoveryCache = new Map();
 const invalidModels = new Map();
 const DISCOVERY_TTL_MS = 30 * 60 * 1000;
@@ -213,13 +214,27 @@ export function geminiKeyCount() { return getApiKeys().length; }
 export async function callGemini({ systemInstruction, contents, forceFunctionName, tools, timeoutMs, model: modelOverride }) {
   const keys = getApiKeys();
   if (!keys.length) { const e = new Error("GEMINI_API_KEY não configurada."); e.code = "missing_key"; throw e; }
-  if (Date.now() < overloadUntil) {
-    const e = new Error("Gemini temporariamente indisponível após 503; usando fallback.");
-    e.status = 503; e.code = "UNAVAILABLE"; throw e;
-  }
   const key = keys[keyIndex++ % keys.length];
   const started = Date.now();
   const primary = normalizedModel(modelOverride || GEMINI_MODEL);
+  const fallbackModels = String(process.env.KIRA_GEMINI_FALLBACK_MODELS || "").split(",").map(normalizedModel).filter(m => m && m !== primary);
+  const isOverloaded = model => (overloadedModels.get(model) || 0) > Date.now();
+  // Modelo principal sobrecarregado há pouco: vai direto para as reservas configuradas.
+  if (isOverloaded(primary)) {
+    for (const model of fallbackModels.filter(m => !isOverloaded(m))) {
+      try {
+        const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName, model, tools, timeoutMs });
+        Object.defineProperty(data, "_kiraModel", { value: model, enumerable: false });
+        console.info(`[kira-provider] provider=gemini model=${model} status=ok reason=primary_overloaded duration_ms=${Date.now()-started}`);
+        return data;
+      } catch (fallbackErr) {
+        if (fallbackErr.status === 503) overloadedModels.set(model, Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000)));
+        console.warn(`[kira-provider] provider=gemini model=${model} status=${fallbackErr.status || fallbackErr.name || "error"} reason=fallback`);
+      }
+    }
+    const e = new Error("Gemini sobrecarregado (modelo principal e reservas).");
+    e.status = 503; e.code = "UNAVAILABLE"; throw e;
+  }
   const attempt = async (model) => {
     const data = await requestGemini({ systemInstruction, contents, apiKey: key, forceFunctionName, model, tools, timeoutMs });
     Object.defineProperty(data, "_kiraModel", { value: model, enumerable: false });
@@ -261,10 +276,37 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
         console.warn('[kira-gemini] retry_transient_failed status=' + (retryError.status || retryError.name || 'error'));
       }
     }
-    if (err.status === 503 || err.code === "UNAVAILABLE") {
-      overloadUntil = Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000));
-    }
     console.warn(`[kira-provider] provider=gemini model=${primary} status=${err.status || err.name || "error"} duration_ms=${Date.now()-started}`);
+    // 429 (cota): tenta as outras chaves com o mesmo modelo (cotas são por projeto).
+    if (err.status === 429) {
+      for (let i = 1; i < Math.min(keys.length, 5); i++) {
+        const otherKey = keys[keyIndex++ % keys.length];
+        if (otherKey === key) continue;
+        try {
+          const data = await requestGemini({ systemInstruction, contents, apiKey: otherKey, forceFunctionName, model: primary, tools, timeoutMs });
+          Object.defineProperty(data, "_kiraModel", { value: primary, enumerable: false });
+          console.info(`[kira-provider] provider=gemini model=${primary} status=ok reason=other_key duration_ms=${Date.now()-started}`);
+          return data;
+        } catch (keyErr) {
+          if (keyErr.status !== 429) { err = keyErr; break; }
+        }
+      }
+    }
+    // 503 (sobrecarga), 429 (cota esgotada) ou tempo esgotado: tenta os modelos de reserva configurados.
+    if (err.status === 503 || err.code === "UNAVAILABLE" || err.status === 429 || err.name === "TimeoutError") {
+      if (err.status === 503 || err.code === "UNAVAILABLE") overloadedModels.set(primary, Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000)));
+      for (const model of fallbackModels.filter(m => !isOverloaded(m))) {
+        try {
+          const data = await requestGemini({ systemInstruction, contents, apiKey: keys[keyIndex++ % keys.length], forceFunctionName, model, tools, timeoutMs });
+          Object.defineProperty(data, "_kiraModel", { value: model, enumerable: false });
+          console.info(`[kira-provider] provider=gemini model=${model} status=ok reason=fallback_after_${err.status || err.name} duration_ms=${Date.now()-started}`);
+          return data;
+        } catch (fallbackErr) {
+          if (fallbackErr.status === 503) overloadedModels.set(model, Date.now() + Math.max(5000, Number(process.env.KIRA_GEMINI_COOLDOWN_MS || 45000)));
+          console.warn(`[kira-provider] provider=gemini model=${model} status=${fallbackErr.status || fallbackErr.name || "error"} reason=fallback`);
+        }
+      }
+    }
     throw err;
   }
 }

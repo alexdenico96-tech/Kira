@@ -99,7 +99,9 @@ export async function renderPptx(spec, { resolveImage } = {}) {
           const x = M + i * (cardW + gap);
           const y = top + 0.4;
           slide.addShape(pptx.ShapeType.roundRect, { x, y, w: cardW, h: 3.2, fill: { color: i % 2 ? tint(t.accent, 0.9) : tint(t.primary, 0.92) }, line: { color: 'FFFFFF', width: 0 }, rectRadius: 0.15 });
-          slide.addText(st.value, { ...head, x: x + 0.2, y: y + 0.45, w: cardW - 0.4, h: 1.4, fontSize: sizeFor(st.value, 48, [[6, 40], [10, 30]]), bold: true, color: i % 2 ? t.accent : t.primary, align: 'center', valign: 'middle', fit: 'shrink' });
+          // Tamanho do número calculado pela largura do cartão: "1.200.000" em 4 cartões não pode quebrar linha.
+          const fitSize = Math.floor(((cardW - 0.4) * 72) / (Math.max(3, st.value.length) * 0.62));
+          slide.addText(st.value, { ...head, x: x + 0.2, y: y + 0.45, w: cardW - 0.4, h: 1.4, fontSize: Math.max(18, Math.min(48, fitSize)), bold: true, wrap: false, color: i % 2 ? t.accent : t.primary, align: 'center', valign: 'middle', fit: 'shrink' });
           slide.addText(st.label, { ...body, x: x + 0.25, y: y + 1.9, w: cardW - 0.5, h: 1.1, fontSize: 15, color: t.text, align: 'center', valign: 'top', fit: 'shrink' });
         });
         if (s.bullets.length && s.stats.length) slide.addText(s.bullets.join('   ·   '), { ...body, x: M, y: H - 1.25, w: W - 2 * M, h: 0.5, fontSize: 13, color: t.muted, align: 'center' });

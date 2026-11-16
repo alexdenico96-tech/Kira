@@ -13,7 +13,7 @@ import { sendEmail, resetPasswordEmailHtml } from "./lib/email.js";
 import { checkUserRateLimit, hasDailyBudget, consumeDailyBudget, getUserUsage, getDailyUsage } from "./lib/rateLimit.js";
 import { callGemini, geminiKeyCount, transcribeKiraAudio, callHomeAssistant, HOME_ASSISTANT_ENABLED, GEMINI_MODEL } from "./lib/gemini.js";
 import { generateKiraImage } from "./lib/imageGeneration.js";
-import { callGroqWebSearch, callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
+import { callGroqWebSearch, callGroqJson, callGroqFallback, callGroqArtifactFallback, callGroqArtifactUpdateFallback, callGroqPackageJsonRepair, GROQ_ENABLED } from "./lib/groq.js";
 import { callOpenAIText, OPENAI_ENABLED } from "./lib/openai.js";
 import { callExtraPool, extraProviderStatus } from "./lib/extraProviders.js";
 import { classifyKiraIntent } from "./lib/intentRouter.js";
@@ -180,7 +180,8 @@ function parseLooseJson(text) {
 }
 
 // Modelo do planejamento de arquivos: o "lite" escreve conteúdo raso em estruturas grandes.
-const FILE_MODELS = [...new Set([process.env.KIRA_FILE_GEMINI_MODEL || "gemini-flash-latest", undefined])];
+// Um só modelo aqui: as reservas (KIRA_GEMINI_FALLBACK_MODELS) já são tentadas dentro do callGemini.
+const FILE_MODELS = [process.env.KIRA_FILE_GEMINI_MODEL || undefined];
 const WHISPER_LANG = { portuguese: "pt", spanish: "es", english: "en", pt: "pt", es: "es", en: "en" };
 
 const FILE_REPLY = {
@@ -202,13 +203,25 @@ async function planFileSpec({ format, request, history, groqHistory, lang, curre
   }
   if (GROQ_ENABLED) {
     const kind = FILE_FORMATS[format].kind;
-    const text = await callGroqFallback({
-      systemInstruction: `${systemPrompt()}\nResponda SOMENTE com um objeto JSON válido, sem texto antes ou depois.`,
-      message: `${prompt}\nEm vez de chamar a função, responda com o JSON dos argumentos de create_file (campos: format, fileName, title, subtitle, author, theme, currency, ${kind === "presentation" ? "slides" : kind === "spreadsheet" ? "sheets" : "blocks"}).`,
-      history: groqHistory
-    });
-    const spec = parseLooseJson(text);
-    if (spec) return { spec, provider: "groq" };
+    const shape = {
+      presentation: '"slides":[{"layout":"title|section|bullets|two-column|stats|timeline|table|quote|image|closing","title":"...","subtitle":"...","bullets":["..."],"leftTitle":"...","left":["..."],"rightTitle":"...","right":["..."],"stats":[{"value":"...","label":"..."}],"steps":[{"title":"...","text":"..."}],"headers":["..."],"rows":[["..."]],"quote":"...","author":"...","imagePrompt":"...","notes":"..."}]',
+      spreadsheet: '"sheets":[{"name":"...","description":"...","columns":[{"header":"...","type":"text|number|integer|currency|percent|date"}],"rows":[["valor da coluna 1","valor da coluna 2"]],"totals":true}]',
+      document: '"blocks":[{"type":"heading|paragraph|bullets|numbered|table|quote|callout","level":1,"text":"...","items":["..."],"headers":["..."],"rows":[["..."]],"tone":"info|success|warning"}]'
+    }[kind];
+    let model = "groq";
+    try {
+      const text = await callGroqJson({
+        systemInstruction: `${systemPrompt()}\nResponda SOMENTE com um objeto JSON válido.`,
+        message: `${prompt}\n\nIMPORTANTE: em vez de chamar uma função, responda com UM objeto JSON exatamente neste formato (use estes nomes de campos):\n{"format":"${format}","fileName":"...","title":"...","subtitle":"...","author":"","theme":"...","currency":"${currency}",${shape}}`,
+        history: groqHistory,
+        onSelectedModel: m => { model = `groq:${m}`; }
+      });
+      const spec = parseLooseJson(text);
+      if (spec) return { spec, provider: model };
+      console.warn(`[kira-file] groq devolveu JSON inválido (chars=${String(text || "").length})`);
+    } catch (error) {
+      console.warn("[kira-file] planejamento groq falhou:", error.status || error.message);
+    }
   }
   return { spec: null, provider: null };
 }
@@ -833,10 +846,23 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         console.info(`[kira-image] fidelity attempts=${result.attempts} score=${v?.score ?? "n/a"} edit=${Boolean(previous)} reference=${Boolean(reference)}`);
       }
       if (!reply && fileRequest) {
-        const made = await createKiraFile({ format: fileRequest.format, request: textMessage, history, groqHistory, userId: req.user.id, step, langHint: voiceInfo?.language });
-        fileMeta = made.file;
-        reply = made.reply;
-        selectedProvider = made.provider;
+        try {
+          const made = await createKiraFile({ format: fileRequest.format, request: textMessage, history, groqHistory, userId: req.user.id, step, langHint: voiceInfo?.language });
+          fileMeta = made.file;
+          reply = made.reply;
+          selectedProvider = made.provider;
+        } catch (fileErr) {
+          // Não cair numa resposta de texto qualquer: o usuário pediu um arquivo.
+          console.warn("[kira-file] criação falhou:", fileErr.status || fileErr.message);
+          const lang = detectLanguage(textMessage, WHISPER_LANG[String(voiceInfo?.language || "").toLowerCase()] || "pt");
+          step("file-render", "Não foi possível gerar o arquivo agora", "serviços de IA sobrecarregados", "done");
+          reply = {
+            pt: "Não consegui gerar o arquivo agora: os serviços de IA estão sobrecarregados neste momento. Tente de novo em 1 ou 2 minutos — seu pedido não se perdeu, é só reenviar.",
+            es: "No pude generar el archivo ahora: los servicios de IA están sobrecargados en este momento. Inténtalo de nuevo en 1 o 2 minutos; solo tienes que reenviar tu pedido.",
+            en: "I couldn't generate the file right now because the AI services are overloaded. Please try again in a minute or two — just resend your request."
+          }[lang];
+          selectedProvider = "none";
+        }
       }
       // KIRA_WEB_SEARCH_V1: perguntas sobre o presente são respondidas com pesquisa real na web.
       if (!reply && !wantsArtifact && !editingArtifact && !wantsImage && !image?.data && needsWebSearch(textMessage)) {

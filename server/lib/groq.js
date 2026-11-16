@@ -237,3 +237,17 @@ export async function callGroqWebSearch({ systemInstruction, message, history = 
   }
   throw lastError;
 }
+
+// KIRA_FILES_GROQ_V1: planejamento de arquivos em modo JSON, com espaço para apresentações completas
+// (o callGroqFallback tem 4096 tokens: o JSON de um deck com anotações chegava cortado).
+export async function callGroqJson({ systemInstruction, message, history = [], maxTokens = Number(process.env.KIRA_GROQ_FILE_MAX_TOKENS || 16000), preferredModel = process.env.KIRA_GROQ_FILE_MODEL || "openai/gpt-oss-120b", onSelectedModel }) {
+  return tryModels({
+    messages: [
+      { role: "system", content: systemInstruction },
+      ...history.slice(-6),
+      { role: "user", content: message }
+    ],
+    maxTokens,
+    jsonMode: true
+  }, onSelectedModel, preferredModel);
+}

@@ -48,7 +48,63 @@ export function safeFileName(name, ext) {
 }
 
 // Normaliza e limita o que o modelo devolveu. Nunca confia em formato/tamanho vindos do modelo.
-export function normalizeSpec(raw = {}, format, { lang = 'pt', currency } = {}) {
+// Modelos diferentes usam nomes diferentes ("points", "content", "speakerNotes", linhas como objetos...).
+// Converte tudo para o formato da Kira antes de normalizar, para nenhum conteúdo se perder.
+const asList = v => Array.isArray(v)
+  ? v.map(x => (x && typeof x === 'object' ? (x.text ?? x.content ?? x.title ?? x.value ?? Object.values(x).join(' — ')) : x)).filter(x => x != null && String(x).trim())
+  : typeof v === 'string' ? v.split(/\n+/).map(x => x.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, '').trim()).filter(Boolean) : [];
+const first = (...vals) => vals.find(v => v != null && v !== '');
+
+export function coerceRawSpec(raw = {}) {
+  const r = raw && typeof raw === 'object' ? { ...raw } : {};
+  const nested = r.presentation || r.document || r.spreadsheet || r.file;
+  if (nested && typeof nested === 'object') Object.assign(r, { ...nested, ...r });
+  r.slides = first(r.slides, r.diapositivas, r.pages) || [];
+  r.sheets = first(r.sheets, r.worksheets, r.tabs, r.abas, r.hojas) || [];
+  r.blocks = first(r.blocks, r.content, r.body) || [];
+  if (!Array.isArray(r.blocks) && typeof r.blocks === 'string') r.blocks = [{ type: 'paragraph', text: r.blocks }];
+  // "sections": [{ title, content/paragraphs/bullets }]
+  if ((!Array.isArray(r.blocks) || !r.blocks.length) && Array.isArray(r.sections)) {
+    r.blocks = r.sections.flatMap(sec => [
+      { type: 'heading', level: 1, text: first(sec.title, sec.heading, sec.titulo) },
+      ...asList(first(sec.paragraphs, sec.content, sec.text)).map(text => ({ type: 'paragraph', text })),
+      ...(sec.bullets || sec.items ? [{ type: 'bullets', items: asList(sec.bullets || sec.items) }] : [])
+    ].filter(b => b.text || b.items?.length));
+  }
+  const BLOCK_ALIAS = { h1: ['heading', 1], h2: ['heading', 2], h3: ['heading', 3], title: ['heading', 1], subtitle: ['heading', 2], list: ['bullets'], ul: ['bullets'], bullet: ['bullets'], ol: ['numbered'], 'numbered-list': ['numbered'], p: ['paragraph'], text: ['paragraph'], note: ['callout'], tip: ['callout'], blockquote: ['quote'] };
+  r.blocks = (Array.isArray(r.blocks) ? r.blocks : []).map(b => {
+    if (typeof b === 'string') return { type: 'paragraph', text: b };
+    const alias = BLOCK_ALIAS[String(b?.type || '').toLowerCase()];
+    return {
+      ...b,
+      type: alias ? alias[0] : b?.type,
+      level: first(b?.level, alias?.[1]),
+      text: typeof first(b?.text, b?.content) === 'string' ? first(b?.text, b?.content) : b?.text,
+      items: b?.items?.length ? asList(b.items) : asList(first(b?.list, b?.points, Array.isArray(b?.content) ? b.content : undefined))
+    };
+  });
+  r.slides = (Array.isArray(r.slides) ? r.slides : []).map(sl => ({
+    ...sl,
+    layout: first(sl?.layout, sl?.type, sl?.kind),
+    title: first(sl?.title, sl?.heading, sl?.titulo, sl?.titulo_slide),
+    subtitle: first(sl?.subtitle, sl?.subheading, sl?.subtitulo),
+    bullets: (sl?.bullets?.length ? asList(sl.bullets) : asList(first(sl?.points, sl?.items, sl?.content, sl?.body, sl?.text, sl?.puntos, sl?.topicos))),
+    notes: first(sl?.notes, sl?.speakerNotes, sl?.speaker_notes, sl?.notas, sl?.presenterNotes),
+    left: sl?.left?.length ? asList(sl.left) : asList(sl?.leftColumn?.items || sl?.leftColumn),
+    right: sl?.right?.length ? asList(sl.right) : asList(sl?.rightColumn?.items || sl?.rightColumn)
+  }));
+  r.sheets = (Array.isArray(r.sheets) ? r.sheets : []).map(sh => {
+    const columns = (Array.isArray(sh?.columns) ? sh.columns : Array.isArray(sh?.headers) ? sh.headers : []).map(c => (typeof c === 'string' ? { header: c } : { ...c, header: first(c?.header, c?.name, c?.title, c?.label) }));
+    const headers = columns.map(c => c.header);
+    const rows = (Array.isArray(sh?.rows) ? sh.rows : Array.isArray(sh?.data) ? sh.data : []).map(row =>
+      Array.isArray(row) ? row : row && typeof row === 'object' ? headers.map(h => row[h] ?? row[String(h).toLowerCase()] ?? '') : [row]);
+    return { ...sh, name: first(sh?.name, sh?.title, sh?.nombre), columns, rows };
+  });
+  return r;
+}
+
+export function normalizeSpec(input = {}, format, { lang = 'pt', currency } = {}) {
+  const raw = coerceRawSpec(input);
   const L = langOf(lang);
   const theme = THEME_NAMES.includes(String(raw.theme || '').toLowerCase()) ? String(raw.theme).toLowerCase() : 'corporativo';
   const spec = {
@@ -211,6 +267,9 @@ ${checklist}
 Regras:
 - Fidelidade: inclua tudo o que foi pedido, com os nomes, números, quantidades, ordem e detalhes que o usuário deu. Não troque o assunto, não omita partes e não invente requisitos.
 - Conteúdo real, específico e útil. Proibido: "Lorem ipsum", "Texto aqui", "Item 1", "[inserir]", reticências no lugar de conteúdo.
+- NÃO invente dados factuais sobre o produto, a empresa ou a pessoa do usuário (número de usuários, faturamento, satisfação, clientes, prêmios, citações atribuídas a alguém). Use só os números que o usuário deu ou fatos públicos e verificáveis do assunto. Sem dados, prefira layouts sem números (bullets, two-column, timeline) ou identifique claramente como "meta", "exemplo" ou "estimativa".
+- Citações (layout quote) só de pessoas reais com frases conhecidas, ou do próprio usuário se ele forneceu; nunca atribua frases inventadas.
+- Termine apresentações com um slide closing (agradecimento, próximos passos ou contato).
 - Se o pedido se referir à conversa anterior ("isso", "essa resposta", "lo que hablamos"), use esse conteúdo.
 - Escolha o "theme" que combina com o assunto (negócios → corporativo/executivo; tecnologia → moderno; hobbies, culinária, escola, festas → criativo; saúde/meio ambiente → natureza; viagens → oceano; acadêmico → minimalista).
 - currency = "${currency}" salvo se o pedido citar outra moeda.
