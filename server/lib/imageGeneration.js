@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { buildPollinationsUrl } from "./gemini.js";
 
 // Usado por lib/projectImages.js (fica aqui no topo porque os testes executam o restante do arquivo isolado).
 export { generateCloudflareImage };
@@ -321,12 +320,7 @@ export async function generateKiraImage(prompt, options = {}) {
   // Prompt já planejado pela camada de fidelidade: vai direto ao modelo, sem o envelope genérico.
   if (options.plannedPrompt) {
     const plannedLayout = options.layout || detectImageLayout(cleanPrompt);
-    try {
-      return await generateCloudflareImage(options.plannedPrompt, plannedLayout, options);
-    } catch (error) {
-      console.warn("[kira-image] cloudflare unavailable (planned); using pollinations:", error.message);
-      return savePollinationsImage(options.plannedPrompt);
-    }
+    return generateCloudflareImage(options.plannedPrompt, plannedLayout, options).catch(imageUnavailable);
   }
 
   const layout = detectImageLayout(cleanPrompt);
@@ -358,75 +352,18 @@ cleanPrompt,
   );
   console.info("[kira-image] prompt_chars=" + enhancedPrompt.length);
 
-  try {
-    return await generateCloudflareImage(enhancedPrompt, layout);
-  } catch (error) {
-    console.warn(
-      "[kira-image] cloudflare unavailable; using pollinations:",
-      error.message
-    );
-  }
-
-  console.info("[kira-image] provider=pollinations event=start");
-
-  const url = buildPollinationsUrl(enhancedPrompt);
-
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(120000)
-  });
-
-  if (!response.ok) {
-    throw new Error(`Pollinations retornou HTTP ${response.status}.`);
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-
-  if (!contentType.toLowerCase().startsWith("image/")) {
-    throw new Error("Pollinations não retornou uma imagem.");
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
-
-  if (bytes.length < 100) {
-    throw new Error("A imagem recebida está vazia ou incompleta.");
-  }
-
-  if (bytes.length > 20 * 1024 * 1024) {
-    throw new Error("A imagem recebida ultrapassa 20 MB.");
-  }
-
-  let extension;
-
-  if (contentType.includes("image/jpeg")) {
-    extension = "jpg";
-  } else if (contentType.includes("image/png")) {
-    extension = "png";
-  } else if (contentType.includes("image/webp")) {
-    extension = "webp";
-  } else {
-    throw new Error(`Formato de imagem não suportado: ${contentType}`);
-  }
-
-  await fs.mkdir(imageDir, { recursive: true });
-
-  const filename = `${randomUUID()}.${extension}`;
-
-  await fs.writeFile(path.join(imageDir, filename), bytes);
-
-  return `/api/generated-images/${filename}`;
+  return generateCloudflareImage(enhancedPrompt, layout).catch(imageUnavailable);
 }
 
-
-// Reserva Pollinations para prompts planejados (mesmo formato de arquivo da geração normal).
-async function savePollinationsImage(prompt) {
-  const response = await fetch(buildPollinationsUrl(prompt), { signal: AbortSignal.timeout(120000) });
-  const contentType = response.headers.get("content-type") || "";
-  if (!response.ok || !contentType.startsWith("image/")) throw new Error(`Pollinations retornou HTTP ${response.status}.`);
-  const bytes = Buffer.from(await response.arrayBuffer());
-  if (bytes.length < 100) throw new Error("A imagem recebida está vazia ou incompleta.");
-  const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
-  await fs.mkdir(imageDir, { recursive: true });
-  const filename = `${randomUUID()}.${extension}`;
-  await fs.writeFile(path.join(imageDir, filename), bytes);
-  return `/api/generated-images/${filename}`;
+// KIRA_NO_POLLINATIONS: sem reserva externa. Quando o Cloudflare não gera, o erro explica o motivo.
+function imageUnavailable(error) {
+  const quota = /cooldown|quota|neuron|429|daily/i.test(String(error?.message || ""));
+  console.warn(`[kira-image] cloudflare_unavailable quota=${quota} reason=${error?.message}`);
+  const err = new Error(quota
+    ? "A cota diária de imagens do Cloudflare acabou. Ela renova à meia-noite UTC (21h no horário de Brasília)."
+    : "O gerador de imagens (Cloudflare) não respondeu agora. Tente novamente em instantes.");
+  err.imageUnavailable = true;
+  err.quota = quota;
+  err.cause = error;
+  throw err;
 }

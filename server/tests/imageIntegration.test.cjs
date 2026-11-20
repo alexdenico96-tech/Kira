@@ -231,26 +231,17 @@ test("Falha de rede libera a reserva e tenta outra conta", async () => {
   assert.equal(env.api.getActive("conta-b"), 0);
 });
 
-test("Usa Pollinations quando todas as contas Cloudflare falham", async () => {
+test("Sem Pollinations: quando todas as contas Cloudflare falham, devolve erro claro e não chama outro serviço", async () => {
   const env = createEnvironment({ autoFailCloudflare: true });
 
-  const result = await env.api.generateKiraImage(
-    "Crie uma imagem de um gato astronauta"
+  await assert.rejects(
+    env.api.generateKiraImage("Crie uma imagem de um gato astronauta"),
+    err => err.imageUnavailable === true && /Cloudflare/.test(err.message)
   );
 
-  const cloudflareCalls = env.calls.filter(url =>
-    url.includes("api.cloudflare.com")
-  );
-
-  const pollinationsCalls = env.calls.filter(url =>
-    url.includes("pollinations.test")
-  );
-
-  assert.equal(cloudflareCalls.length, 3);
-  assert.equal(pollinationsCalls.length, 1);
-  assert.ok(result.startsWith("/api/generated-images/"));
-  assert.equal(env.saved.length, 1);
-  assert.equal(env.saved[0].size, 200);
+  assert.equal(env.calls.filter(url => url.includes("api.cloudflare.com")).length, 3);
+  assert.equal(env.calls.filter(url => !url.includes("api.cloudflare.com")).length, 0);
+  assert.equal(env.saved.length, 0);
 
   for (const id of ["conta-a", "conta-b", "conta-c"]) {
     assert.equal(env.api.getActive(id), 0);

@@ -68,6 +68,20 @@ export async function initStore() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS search_entry_point TEXT;`);
   // KIRA_FILES_V1: arquivos gerados ficam no banco (o disco do Render é apagado a cada deploy).
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS file_meta JSONB;`);
+  // KIRA_MEMORY_V1: resumo de conversas longas, memória do usuário e ficha de requisitos dos projetos.
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary TEXT;`);
+  await pool.query(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS summary_upto INTEGER NOT NULL DEFAULT 0;`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS memory_enabled BOOLEAN NOT NULL DEFAULT TRUE;`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_memories (
+      id UUID PRIMARY KEY,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      fact TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'geral',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS user_memories_user_idx ON user_memories(user_id, updated_at DESC);`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS generated_files (
       id UUID PRIMARY KEY,
@@ -134,6 +148,7 @@ export async function initStore() {
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_id UUID;`);
   await pool.query(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS artifact_version INTEGER;`);
   await pool.query(`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS description TEXT;`);
+  await pool.query(`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS brief JSONB;`);
   await pool.query(`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS stack JSONB NOT NULL DEFAULT '[]';`);
   await pool.query(`ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS entry_point TEXT;`);
   await pool.query(`ALTER TABLE artifact_versions ADD COLUMN IF NOT EXISTS change_manifest JSONB NOT NULL DEFAULT '{"created":[],"updated":[],"deleted":[]}'::jsonb;`);
@@ -292,7 +307,7 @@ export async function listConversations(userId) {
 }
 
 export async function getConversation(userId, conversationId) {
-  const { rows: convRows } = await pool.query(`SELECT id, title, created_at AS "createdAt" FROM conversations WHERE id = $1 AND user_id = $2`, [
+  const { rows: convRows } = await pool.query(`SELECT id, title, created_at AS "createdAt", summary, summary_upto AS "summaryUpto" FROM conversations WHERE id = $1 AND user_id = $2`, [
     conversationId,
     userId
   ]);
@@ -546,4 +561,69 @@ export async function getGeneratedFile(userId, id) {
     [id, String(userId)]
   );
   return rows[0] || null;
+}
+
+// ---------- KIRA_MEMORY_V1 ----------
+export async function updateConversationSummary(userId, conversationId, summary, upto) {
+  await pool.query(`UPDATE conversations SET summary = $3, summary_upto = $4 WHERE id = $1 AND user_id = $2`, [conversationId, userId, summary, upto]);
+}
+
+export async function getMemorySettings(userId) {
+  const { rows } = await pool.query(`SELECT memory_enabled AS "enabled" FROM users WHERE id = $1`, [userId]);
+  return { enabled: rows[0]?.enabled !== false };
+}
+
+export async function setMemoryEnabled(userId, enabled) {
+  await pool.query(`UPDATE users SET memory_enabled = $2 WHERE id = $1`, [userId, Boolean(enabled)]);
+}
+
+export async function listUserMemories(userId) {
+  const { rows } = await pool.query(
+    `SELECT id, fact, category, updated_at AS "updatedAt" FROM user_memories WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 60`,
+    [userId]
+  );
+  return rows;
+}
+
+// Aplica as mudanças sugeridas: adiciona fatos novos, atualiza os que mudaram e remove os obsoletos.
+export async function applyMemoryChanges(userId, { add = [], remove = [] } = {}, randomId) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const id of remove) await client.query(`DELETE FROM user_memories WHERE id = $1 AND user_id = $2`, [id, userId]);
+    for (const item of add) {
+      await client.query(`INSERT INTO user_memories (id, user_id, fact, category) VALUES ($1, $2, $3, $4)`, [randomId(), userId, item.fact, item.category || "geral"]);
+    }
+    // Limite: mantém só os 40 fatos mais recentes.
+    await client.query(`DELETE FROM user_memories WHERE user_id = $1 AND id NOT IN (SELECT id FROM user_memories WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 40)`, [userId]);
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function deleteUserMemory(userId, id) {
+  await pool.query(`DELETE FROM user_memories WHERE id = $1 AND user_id = $2`, [id, userId]);
+}
+
+export async function clearUserMemories(userId) {
+  await pool.query(`DELETE FROM user_memories WHERE user_id = $1`, [userId]);
+}
+
+export async function countUserMessages(userId, conversationId) {
+  const { rows } = await pool.query(`SELECT COUNT(*)::int AS n FROM messages m JOIN conversations c ON c.id = m.conversation_id WHERE c.id = $1 AND c.user_id = $2 AND m.role = 'user'`, [conversationId, userId]);
+  return rows[0]?.n || 0;
+}
+
+// Ficha do projeto: pedido original + checklist, para edições futuras não quebrarem o que foi pedido.
+export async function saveProjectBrief(userId, artifactId, brief) {
+  await pool.query(`UPDATE artifacts SET brief = $3 WHERE id = $1 AND user_id = $2`, [artifactId, userId, JSON.stringify(brief)]);
+}
+
+export async function getProjectBrief(userId, artifactId) {
+  const { rows } = await pool.query(`SELECT brief FROM artifacts WHERE id = $1 AND user_id = $2`, [artifactId, userId]);
+  return rows[0]?.brief || null;
 }

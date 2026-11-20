@@ -126,6 +126,21 @@ export async function downloadFile(token, id) {
   return res.blob();
 }
 
+// KIRA_MEMORY_V1: o que a Kira lembra do usuário.
+async function memoryRequest(token, path = "", options = {}) {
+  const res = await fetch(`${BASE}/memory${path}`, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "Erro na requisição.");
+  return data;
+}
+export const getMemory = token => memoryRequest(token);
+export const setMemoryEnabled = (token, enabled) => memoryRequest(token, "", { method: "PUT", body: JSON.stringify({ enabled }) });
+export const deleteMemory = (token, id) => memoryRequest(token, `/${encodeURIComponent(id)}`, { method: "DELETE" });
+export const clearMemory = token => memoryRequest(token, "", { method: "DELETE" });
+
 export const getArtifact = (token, artifactId, version) =>
   request(`/artifacts/${artifactId}${version ? `?version=${version}` : ""}`, { token });
 

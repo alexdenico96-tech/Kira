@@ -311,10 +311,6 @@ export async function callGemini({ systemInstruction, contents, forceFunctionNam
   }
 }
 
-export function buildPollinationsUrl(prompt) {
-  const encoded = encodeURIComponent(String(prompt || "").slice(0, 1800));
-  return `https://image.pollinations.ai/prompt/${encoded}?width=1280&height=1280&model=flux&enhance=true&nologo=true`;
-}
 
 export async function callHomeAssistant({ domain, service, entity_id }) {
   if (!HOME_ASSISTANT_ENABLED) {

@@ -127,24 +127,6 @@ function pump() {
   }
 }
 
-// O Pollinations anônimo aceita ~1 requisição por IP; serializa a reserva.
-let pollinationsChain = Promise.resolve();
-function viaPollinations(id, manifest) {
-  const run = pollinationsChain.then(async () => {
-    const response = await fetch(manifest.originalUrl, { signal: AbortSignal.timeout(90000) });
-    const type = response.headers.get('content-type') || '';
-    if (!response.ok || !type.startsWith('image/')) throw new Error(`Pollinations HTTP ${response.status}`);
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length < 100) throw new Error('Pollinations retornou imagem vazia');
-    const ext = type.includes('png') ? 'png' : type.includes('webp') ? 'webp' : 'jpg';
-    const dest = path.join(imageDir, `${id}.${ext}`);
-    await fs.writeFile(dest, bytes);
-    return dest;
-  });
-  pollinationsChain = run.catch(() => {});
-  return run;
-}
-
 async function generate(id, manifest) {
   await fs.mkdir(imageDir, { recursive: true });
   try {
@@ -156,10 +138,8 @@ async function generate(id, manifest) {
     console.info(`[kira-project-image] id=${id} provider=cloudflare status=ok`);
     return dest;
   } catch (error) {
-    console.warn(`[kira-project-image] id=${id} cloudflare_failed=${error.message}; usando Pollinations no servidor`);
-    const dest = await viaPollinations(id, manifest);
-    console.info(`[kira-project-image] id=${id} provider=pollinations status=ok`);
-    return dest;
+    console.warn(`[kira-project-image] id=${id} cloudflare_failed=${error.message}; marcador temporário`);
+    throw error;
   }
 }
 
@@ -180,7 +160,7 @@ export function warmProjectImages(ids = []) {
   }
 }
 
-// Usado pela rota: devolve o arquivo pronto, espera a geração ou indica a URL original como reserva.
+// Usado pela rota: devolve o arquivo pronto, espera a geração ou um fundo neutro temporário.
 export async function getProjectImage(id, token) {
   if (!isProjectImageId(id)) return null;
   const ready = await findReadyFile(id);
@@ -194,6 +174,15 @@ export async function getProjectImage(id, token) {
   try {
     return { file: await ensure(id, manifest, true) };
   } catch {
-    return { fallbackUrl: manifest.originalUrl };
+    // KIRA_NO_POLLINATIONS: fundo neutro sem cache; a imagem real é gerada no próximo carregamento.
+    return { placeholder: placeholderSvg(manifest) };
   }
+}
+
+// Fundo neutro do tamanho certo (não quebra o layout do projeto enquanto a imagem não existe).
+export function placeholderSvg({ width = 1024, height = 768, seed = 1 } = {}) {
+  const w = Math.max(16, Math.min(4096, Number(width) || 1024));
+  const h = Math.max(16, Math.min(4096, Number(height) || 768));
+  const hue = (Number(seed) * 47) % 360;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${hue},28%,22%)"/><stop offset="1" stop-color="hsl(${(hue + 40) % 360},32%,12%)"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/></svg>`;
 }

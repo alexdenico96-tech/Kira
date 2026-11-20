@@ -276,7 +276,7 @@ export default function LoginScreen({ onAuthenticated }) {
       <section className="mx-auto max-w-6xl px-5 pb-16">
         <div className="kira-final-cta rounded-[32px] px-7 py-12 text-center sm:px-12">
           <Sparkles className="mx-auto text-neon" size={26} />
-          <h2 className="mt-4 font-display text-3xl font-semibold tracking-tight">Pronto para começar?</h2>
+          <h2 className="mt-4 font-display text-3xl font-semibold tracking-tight">Pronta para começar?</h2>
           <p className="mx-auto mt-3 max-w-lg text-mist">Crie sua conta e faça o primeiro pedido em menos de um minuto.</p>
           <button onClick={() => goTo("register")} className="kira-cta mt-7 inline-flex items-center gap-2 rounded-full px-7 py-3.5 text-sm font-semibold">Criar minha conta <ArrowRight size={16} /></button>
         </div>

@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { X, Sun, Moon, HelpCircle, Gauge, MessageSquareHeart, Send, ShieldCheck } from "lucide-react";
+import { X, Sun, Moon, HelpCircle, Gauge, MessageSquareHeart, Send, ShieldCheck, Brain, Trash2 } from "lucide-react";
 import { LegalContent } from "./LegalDocuments.jsx";
-import { getUsage, sendFeedback } from "../lib/api.js";
+import { getUsage, sendFeedback, getMemory, setMemoryEnabled, deleteMemory, clearMemory } from "../lib/api.js";
 
 const TABS = [
   { id: "appearance", label: "Aparência", icon: Sun },
+  { id: "memory", label: "Memória", icon: Brain },
   { id: "help", label: "Central de ajuda", icon: HelpCircle },
   { id: "usage", label: "Limite de uso", icon: Gauge },
   { id: "feedback", label: "Comentários", icon: MessageSquareHeart },
@@ -72,6 +73,70 @@ function UsageBar({ label, count, max }) {
       <div className="h-2 rounded-full bg-panel2 border border-line overflow-hidden">
         <div className={`h-full rounded-full transition-all ${pct > 85 ? "bg-coral" : "bg-neon"}`} style={{ width: `${pct}%` }} />
       </div>
+    </div>
+  );
+}
+
+const CATEGORY = { perfil: "Perfil", preferencia: "Preferência", projeto: "Projeto", objetivo: "Objetivo", geral: "Geral" };
+
+// KIRA_MEMORY_V1: transparência e controle sobre o que a Kira lembra entre conversas.
+function MemoryTab({ token }) {
+  const [state, setState] = useState({ loading: true, enabled: true, facts: [], error: "" });
+  const load = () => getMemory(token)
+    .then(d => setState({ loading: false, enabled: d.enabled, facts: d.facts || [], error: "" }))
+    .catch(e => setState(s => ({ ...s, loading: false, error: e.message })));
+  useEffect(() => { load(); }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function toggle() {
+    const enabled = !state.enabled;
+    setState(s => ({ ...s, enabled }));
+    try { await setMemoryEnabled(token, enabled); } catch (e) { setState(s => ({ ...s, enabled: !enabled, error: e.message })); }
+  }
+  async function remove(id) {
+    setState(s => ({ ...s, facts: s.facts.filter(f => f.id !== id) }));
+    try { await deleteMemory(token, id); } catch (e) { setState(s => ({ ...s, error: e.message })); load(); }
+  }
+  async function clearAll() {
+    if (!window.confirm("Apagar tudo o que a Kira lembra sobre você?")) return;
+    try { await clearMemory(token); setState(s => ({ ...s, facts: [] })); } catch (e) { setState(s => ({ ...s, error: e.message })); }
+  }
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-mist font-body leading-relaxed">
+        A Kira guarda fatos úteis que você conta (como seu nome, preferências e projetos) para manter a coerência entre conversas.
+        Senhas, documentos, saúde e finanças nunca são guardados.
+      </p>
+      <button onClick={toggle} className="w-full flex items-center justify-between rounded-2xl border border-line bg-panel2 px-4 py-3 text-left">
+        <span>
+          <span className="block text-sm text-paper font-body">Usar memória entre conversas</span>
+          <span className="block text-xs text-mist">{state.enabled ? "Ativada" : "Desativada — a Kira não lê nem salva memórias"}</span>
+        </span>
+        <span className={`relative h-6 w-11 rounded-full transition-colors ${state.enabled ? "bg-neon" : "bg-line"}`}>
+          <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${state.enabled ? "left-[22px]" : "left-0.5"}`} />
+        </span>
+      </button>
+      {state.error && <p className="text-xs text-coral">{state.error}</p>}
+      {state.loading ? (
+        <p className="text-sm text-mist">Carregando…</p>
+      ) : state.facts.length === 0 ? (
+        <p className="rounded-2xl border border-dashed border-line px-4 py-6 text-center text-sm text-mist">A Kira ainda não guardou nada sobre você.</p>
+      ) : (
+        <>
+          <ul className="space-y-2">
+            {state.facts.map(f => (
+              <li key={f.id} className="flex items-start gap-3 rounded-2xl border border-line bg-panel2/60 px-4 py-3">
+                <span className="mt-0.5 shrink-0 rounded-full bg-neon/10 px-2 py-0.5 text-[10.5px] font-semibold text-neon">{CATEGORY[f.category] || "Geral"}</span>
+                <span className="flex-1 text-sm text-paper font-body">{f.fact}</span>
+                <button onClick={() => remove(f.id)} className="shrink-0 text-mist hover:text-coral transition-colors" title="Esquecer" aria-label={`Esquecer: ${f.fact}`}>
+                  <Trash2 size={15} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button onClick={clearAll} className="text-xs text-coral hover:underline">Apagar tudo</button>
+        </>
+      )}
     </div>
   );
 }
@@ -182,6 +247,7 @@ export default function SettingsModal({ open, onClose, theme, setTheme, token })
         <div className="p-5 overflow-y-auto">
           {tab === "appearance" && <AppearanceTab theme={theme} setTheme={setTheme} />}
           {tab === "help" && <HelpTab />}
+          {tab === "memory" && <MemoryTab token={token} />}
           {tab === "usage" && <UsageTab token={token} />}
           {tab === "feedback" && <FeedbackTab token={token} />}
           {tab === "legal" && <LegalContent />}

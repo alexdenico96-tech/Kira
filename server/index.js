@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import fsp from "node:fs/promises";
 import { signToken, requireAuth } from "./lib/auth.js";
 import { authLimit } from "./lib/authLimits.js";
@@ -28,6 +29,8 @@ import { designEditGuidance } from "./lib/designDirection.js";
 import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImageId } from "./lib/projectImages.js";
 import { extractRequirements, extractRequirementsHeuristic, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
 import { progressStream } from "./lib/progressStream.js";
+import { inspectReactProject } from "./lib/reactChecks.js";
+import { buildHistory, needsSummary, summaryPrompt, acceptSummary, memoryExtractionPrompt, parseMemoryChanges, shouldExtractMemory, memoryBlock, RECENT_MESSAGES } from "./lib/memory.js";
 import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
 import { buildDesignBrief } from "./lib/designDirection.js";
 import { currentDateLine, needsWebSearch, webSearchAnswer, looksOutdated } from "./lib/webSearch.js";
@@ -75,7 +78,17 @@ import {
   saveVersionWithOperations,
   getVersionChanges,
   saveGeneratedFile,
-  getGeneratedFile
+  getGeneratedFile,
+  updateConversationSummary,
+  getMemorySettings,
+  setMemoryEnabled,
+  listUserMemories,
+  applyMemoryChanges,
+  deleteUserMemory,
+  clearUserMemories,
+  countUserMessages,
+  saveProjectBrief,
+  getProjectBrief
 } from "./lib/store.js";
 
 dotenv.config();
@@ -134,6 +147,78 @@ Anexos: quando receber imagem ou áudio, baseie a resposta no conteúdo efetivam
 Markdown puro; sem HTML decorativo.
 Precisão e honestidade técnica: nunca afirme ter inspecionado código, arquitetura, banco, logs ou configurações que não foram fornecidos. Sem evidência, apresente riscos como hipóteses ("pode ocorrer", "verifique se") e peça o código relevante para confirmar problemas específicos. Diferencie explicitamente fatos verificados, hipóteses e recomendações. Para SQL injection, priorize consultas parametrizadas; validação de entrada é defesa complementar. Não cite nomes internos de ferramentas (como create_document ou update_artifact) nas respostas comuns. Não alegue ter executado testes ou verificado arquivos sem fazê-lo.`;
 
+// ---------- KIRA_MEMORY_V1 ----------
+async function askMemoryModel(prompt, { json = false } = {}) {
+  const instruction = json ? "Você cuida da memória de uma assistente e responde somente JSON válido." : "Você resume conversas com precisão, sem inventar nada.";
+  if (GROQ_ENABLED) {
+    try {
+      return json
+        ? await callGroqJson({ systemInstruction: instruction, message: prompt, maxTokens: 1200, preferredModel: process.env.KIRA_MEMORY_GROQ_MODEL || "openai/gpt-oss-20b" })
+        : await callGroqFallback({ systemInstruction: instruction, message: prompt, history: [], preferredModel: process.env.KIRA_MEMORY_GROQ_MODEL || "openai/gpt-oss-20b" });
+    } catch (err) { console.warn("[kira-memory] groq falhou:", err.status || err.message); }
+  }
+  const data = await callGemini({ systemInstruction: instruction, contents: [{ role: "user", parts: [{ text: prompt }] }] });
+  return (data?.candidates?.[0]?.content?.parts || []).map(p => p.text).filter(Boolean).join("\n");
+}
+
+const memoryJobs = new Set();
+async function updateMemoryInBackground({ userId, conversationId, memoryOn }) {
+  const jobKey = `${userId}:${conversationId}`;
+  if (memoryJobs.has(jobKey)) return; // evita duas atualizações simultâneas da mesma conversa
+  memoryJobs.add(jobKey);
+  try {
+    const conv = await getConversation(userId, conversationId);
+    if (!conv) return;
+    const messages = conv.messages || [];
+    // 1. Resumo incremental das mensagens que saíram da janela recente.
+    if (needsSummary(messages, conv.summaryUpto)) {
+      const olderEnd = messages.length - RECENT_MESSAGES;
+      const fresh = messages.slice(conv.summaryUpto || 0, olderEnd);
+      const summary = acceptSummary(await askMemoryModel(summaryPrompt(conv.summary, fresh)));
+      if (summary) {
+        await updateConversationSummary(userId, conversationId, summary, olderEnd);
+        console.info(`[kira-memory] summary_updated upto=${olderEnd} chars=${summary.length}`);
+      }
+    }
+    // 2. Fatos duradouros sobre o usuário.
+    if (!memoryOn) return;
+    const lastUser = [...messages].reverse().find(m => m.role === "user")?.content || "";
+    const userCount = await countUserMessages(userId, conversationId);
+    if (!shouldExtractMemory(userCount, lastUser)) return;
+    const existing = await listUserMemories(userId);
+    const changes = parseMemoryChanges(await askMemoryModel(memoryExtractionPrompt(existing, messages.slice(-8)), { json: true }), existing);
+    if (changes.add.length || changes.remove.length) {
+      await applyMemoryChanges(userId, changes, randomUUID);
+      console.info(`[kira-memory] facts_added=${changes.add.length} facts_removed=${changes.remove.length}`);
+    }
+  } finally {
+    memoryJobs.delete(jobKey);
+  }
+}
+
+// O usuário vê, apaga e liga/desliga o que a Kira lembra dele.
+app.get("/api/memory", requireAuth, async (req, res) => {
+  try {
+    const [settings, facts] = await Promise.all([getMemorySettings(req.user.id), listUserMemories(req.user.id)]);
+    res.json({ enabled: settings.enabled, facts });
+  } catch (err) { res.status(500).json({ error: "Não consegui carregar a memória." }); }
+});
+app.put("/api/memory", requireAuth, async (req, res) => {
+  try {
+    await setMemoryEnabled(req.user.id, req.body?.enabled !== false);
+    res.json({ enabled: req.body?.enabled !== false });
+  } catch (err) { res.status(500).json({ error: "Não consegui salvar a configuração." }); }
+});
+app.delete("/api/memory/:id", requireAuth, async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(404).json({ error: "Memória não encontrada." });
+  try { await deleteUserMemory(req.user.id, req.params.id); res.json({ ok: true }); }
+  catch (err) { res.status(500).json({ error: "Não consegui apagar." }); }
+});
+app.delete("/api/memory", requireAuth, async (req, res) => {
+  try { await clearUserMemories(req.user.id); res.json({ ok: true }); }
+  catch (err) { res.status(500).json({ error: "Não consegui apagar." }); }
+});
+
 // KIRA_FILES_V1: download dos arquivos gerados (só o dono do arquivo).
 app.get("/api/files/:id", requireAuth, async (req, res) => {
   if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) return res.status(404).json({ error: "Arquivo não encontrado." });
@@ -163,7 +248,8 @@ app.get("/api/project-images/:id", async (req,res)=>{
     const result=await getProjectImage(req.params.id, req.query.m);
     if(!result) return res.status(404).end();
     if(result.file){ res.set("Cache-Control","public, max-age=31536000, immutable"); return res.sendFile(result.file); }
-    return res.redirect(302,result.fallbackUrl);
+    res.set("Cache-Control","no-store"); // fundo temporário: na próxima visita tenta gerar de novo
+    return res.type("image/svg+xml").send(result.placeholder);
   }catch(err){
     console.warn("[kira-project-image] falha:",err.message);
     res.status(502).end();
@@ -370,8 +456,11 @@ const publicBaseUrl = req => (process.env.KIRA_PUBLIC_URL || `${req.protocol}://
 const VISUAL_REFERENCE_NOTE = `REFERÊNCIA VISUAL ANEXADA: a imagem a seguir é o alvo visual do projeto. Reproduza com a máxima fidelidade possível o layout (ordem e proporção das seções, alinhamentos, colunas), a paleta (extraia as cores e declare-as como tokens em :root), a tipografia (escolha a Google Font mais parecida), raios, sombras, espaçamentos, ícones e textos visíveis. Onde a imagem e a DIREÇÃO VISUAL divergirem, a imagem vence. Não reproduza logotipos de marcas registradas; use o nome do projeto do usuário.`;
 
 // KIRA_WEB_SEARCH_V1: data/hora reais em todo prompt — sem isso a Kira "vive" no ano do treinamento.
+// KIRA_MEMORY_V1: memória do usuário + resumo da conversa entram no prompt de TODA chamada desta requisição.
+const requestMemory = new AsyncLocalStorage();
 function systemPrompt() {
-  return `${SYSTEM_PROMPT_BASE}\n${currentDateLine()}`;
+  const memory = requestMemory.getStore()?.memory;
+  return `${SYSTEM_PROMPT_BASE}\n${currentDateLine()}${memory ? `\n\n${memory}` : ""}`;
 }
 
 const CURRENT_TERMS_VERSION = "2026-10-04-v1";
@@ -637,12 +726,16 @@ function selectRelevantArtifactFiles(files, request, maxFiles = 4) {
   return [...wanted].slice(0, maxFiles);
 }
 
-function artifactEditPrompt(artifact, request) {
+function artifactEditPrompt(artifact, request, brief = null) {
   const relevant = selectRelevantArtifactFiles(artifact.files, request);
   const manifest = artifact.files.map(f => f.path).join("\n");
   const context = relevant.map(f => `--- ${f.path} ---\n${f.content}`).join("\n\n");
+  // KIRA_MEMORY_V1: requisitos originais do projeto — a edição não pode quebrá-los.
+  const briefBlock = brief?.requirements?.length
+    ? `\nRequisitos originais do projeto (continuam valendo; não remova nem quebre nenhum, a menos que o pedido atual mande):\n${brief.requirements.map(r => `- ${r.text}`).join("\n")}`
+    : brief?.request ? `\nPedido original que criou o projeto: ${String(brief.request).slice(0, 1500)}` : "";
   return `Projeto existente: ${artifact.name}
-Versão atual: v${artifact.version}
+Versão atual: v${artifact.version}${briefBlock}
 Pedido do usuário: ${request}
 
 Arquivos do projeto (manifesto; conteúdo não incluído):
@@ -700,6 +793,7 @@ function kiraWantsGeneratedImage(value) {
 
 app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
   const step = req.progress; // KIRA_PROGRESS_STREAM_V1: fases visíveis no chat
+  requestMemory.enterWith({ memory: "" });
   let voiceInfo = null; // KIRA_AUDIO_FIDELITY_V1: o que a Kira ouviu e o pedido usado
   const chatStartedAt = Date.now();
   res.once("finish", () => console.info(`[kira-chat] status=${res.statusCode} duration_ms=${Date.now()-chatStartedAt}`));
@@ -753,7 +847,17 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       conv = await createConversation(req.user.id, title);
     }
 
-    const history = trimHistory(conv.messages);
+    // KIRA_MEMORY_V1: últimas mensagens completas + resumo das antigas + fatos do usuário.
+    const history = buildHistory(conv.messages);
+    let memoryFacts = [];
+    let memoryOn = true;
+    try {
+      memoryOn = (await getMemorySettings(req.user.id)).enabled;
+      if (memoryOn) memoryFacts = await listUserMemories(req.user.id);
+    } catch (memErr) { console.warn("[kira-memory] leitura falhou:", memErr.message); }
+    const olderCount = Math.max(0, conv.messages.length - RECENT_MESSAGES);
+    requestMemory.getStore().memory = memoryBlock({ facts: memoryFacts, summary: olderCount > 0 ? conv.summary || "" : "" });
+    if (memoryFacts.length || (olderCount && conv.summary)) console.info(`[kira-memory] facts=${memoryFacts.length} summary=${olderCount && conv.summary ? conv.summary.length : 0} history=${history.length}`);
     const groqHistory = history.map(m => ({
       role: m.role === "model" ? "assistant" : "user",
       content: m.parts?.[0]?.text || ""
@@ -900,6 +1004,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         route.selectedProvider="openai"; route.selectedModel=route.providers[0].model;
         selectedProvider="openai"; selectedModel=route.providers[0].model;
       }
+      const projectBrief = editingArtifact && existingArtifact ? await getProjectBrief(req.user.id, existingArtifact.id).catch(() => null) : null;
       // KIRA_VISUAL_REFERENCE_V1: print/mockup anexado vira referência visual do projeto (antes era descartado).
       const referenceParts = image?.data ? [{ text: VISUAL_REFERENCE_NOTE }, { inlineData: { mimeType: image.mimeType || "image/jpeg", data: image.data } }] : [];
       // KIRA_REQUIREMENTS_V1: pedidos complexos viram um checklist verificável antes da geração.
@@ -916,7 +1021,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       } else if (editingArtifact && !reply) step('edit', 'Aplicando as alterações');
       const projectPrompt = (issues=[]) => isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,issues,requirements) : artifactQualityPrompt(textMessage,issues);
       const aiContents = editingArtifact
-        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage) }, ...referenceParts] }]
+        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage, projectBrief) }, ...referenceParts] }]
         : (wantsArtifact
           ? [...history, { role: "user", parts: [{ text: projectPrompt() }, ...referenceParts] }]
           : contents);
@@ -964,7 +1069,38 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         const changes=Array.isArray(args.changes)?args.changes:[];
         const applied=applyFileOperations(existingArtifact.files,changes);
         if(!applied.manifest.created.length&&!applied.manifest.updated.length&&!applied.manifest.deleted.length) throw new Error("Nenhuma alteração válida retornada.");
-        const normalized=repairGeneratedHtml(applied.files);
+        let normalized=repairGeneratedHtml(applied.files);
+        // KIRA_MEMORY_V1: a edição não pode quebrar o que o pedido original exigia (nem introduzir erros de React).
+        const briefReqs=projectBrief?.requirements||[];
+        const reactBefore=new Set(inspectReactProject(existingArtifact.files).issues);
+        const regressions=()=>{
+          const before=verifyRequirements(existingArtifact.files,briefReqs);
+          const after=verifyRequirements(normalized.files,briefReqs);
+          const lost=after.missing.filter(m=>!before.missing.some(b=>b.id===m.id));
+          const newReact=inspectReactProject(normalized.files).issues.filter(i=>!reactBefore.has(i));
+          return { lost, newReact, issues:[...lost.map(r=>`a edição removeu/quebrou o requisito original "${r.text}" (${r.reason})`), ...newReact] };
+        };
+        let regression=regressions();
+        if(regression.issues.length){
+          step('edit', `Conferindo a edição · ${regression.issues.length} ponto(s) quebrado(s)`, regression.issues[0].slice(0,110));
+          console.warn(`[kira-edit] regressions=${regression.issues.length} first="${regression.issues[0].slice(0,120)}"`);
+          try{
+            const fixData=await callGemini({ systemInstruction:systemPrompt(), contents:[{role:"user",parts:[{text:projectFixPrompt(`${textMessage}\n\n(Edição de um projeto existente. Mantenha a alteração pedida e restaure o que foi quebrado.)`, { files: normalized.files, issues: regression.issues, req:{ missing: regression.lost }, visual:{ issues: [] } }, briefReqs)}]}], forceFunctionName:"update_artifact" });
+            const fixCall=(fixData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
+            const fixChanges=Array.isArray(fixCall?.args?.changes)?fixCall.args.changes:[];
+            if(fixChanges.length){
+              const fixed=applyFileOperations(normalized.files,fixChanges);
+              const previous=normalized;
+              normalized=repairGeneratedHtml(fixed.files);
+              const after=regressions();
+              if(after.issues.length<=regression.issues.length){
+                regression=after;
+                for(const key of ["created","updated","deleted"]) applied.manifest[key]=[...new Set([...applied.manifest[key],...fixed.manifest[key]])];
+              } else normalized=previous;
+            }
+          }catch(fixErr){ console.warn("[kira-edit] correção de regressão falhou:", fixErr.status||fixErr.message); }
+          console.info(`[kira-edit] regressions_after_fix=${regression.issues.length}`);
+        }
         const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,await withProjectImages(normalized.files),args.summary||textMessage.slice(0,160),applied.manifest);
         artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
         step('edit', 'Alterações aplicadas', `${applied.manifest.created.length+applied.manifest.updated.length+applied.manifest.deleted.length} arquivo(s) · v${artifactVersion}`, 'done');
@@ -1064,8 +1200,8 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
       // Não anunciar uma imagem que não foi gerada.
       if (wantsImage) {
         console.warn("[kira-image] generation_failed:", err.message);
-        return res.status(502).json({
-          error: "Não consegui gerar a imagem agora. Tente novamente."
+        return res.status(err.quota ? 429 : 502).json({
+          error: err.imageUnavailable ? err.message : "Não consegui gerar a imagem agora. Tente novamente."
         });
       }
       // Preservar a análise visual: não substituir imagens por um fallback apenas textual.
@@ -1294,6 +1430,8 @@ if (syntax.issues.length) {
       artifactVersion = createdArtifact.version;
       const meta=inferProjectMetadata(createdArtifact.name,createdArtifact.files);
       await updateProjectMetadata(req.user.id,createdArtifact.id,meta);
+      // KIRA_MEMORY_V1: ficha do projeto (pedido original + checklist) para as próximas edições.
+      await saveProjectBrief(req.user.id,createdArtifact.id,{ request: textMessage.slice(0, 6000), requirements: requirements.length ? requirements : extractRequirementsHeuristic(textMessage), createdAt: new Date().toISOString() }).catch(e=>console.warn("[kira-memory] ficha do projeto não salva:", e.message));
       await setActiveProject(req.user.id,conv.id,createdArtifact.id);
     }
 
@@ -1311,6 +1449,8 @@ if (syntax.issues.length) {
     if(history.length===0 && route.task==="chat_small" && complexity==="simple" && reply && !imageUrl && !artifactFiles?.length && !image && !audio && !searchInfo && !fileMeta){
       await putCachedResponse(cacheFingerprint(textMessage),normalizeForCache(textMessage),reply,route.providers[0]?.model||"fallback");
     }
+    // KIRA_MEMORY_V1: resumo e memória atualizados depois da resposta (não atrasam o usuário).
+    setImmediate(() => { updateMemoryInBackground({ userId: req.user.id, conversationId: conv.id, memoryOn }).catch(e => console.warn("[kira-memory] atualização falhou:", e.message)); });
     res.json({ conversationId: conv.id, title: conv.title, reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, artifactId: responseArtifactId, artifactVersion, usedFallback, route, cacheHit:false,
       sources: searchInfo?.sources || [], searchQueries: searchInfo?.queries || [], searchEntryPoint: searchInfo?.entryPoint || "", file: fileMeta, voice: voiceInfo });
   } catch (err) {
