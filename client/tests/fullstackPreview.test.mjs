@@ -25,3 +25,19 @@ test('preview full-stack: só o frontend vai para o navegador', () => {
   assert.ok(!Object.keys(cfg.files).some(p => p.startsWith('/server') || p.endsWith('.sql')));
   assert.deepEqual(Object.keys(cfg.customSetup.dependencies).sort(), ['react', 'react-dom', 'recharts']);
 });
+
+test('preview full-stack: /api falha na hora (modo demonstração) e outros fetch continuam normais', async () => {
+  const cfg = buildSandpackPreviewConfig(files);
+  const page = cfg.files['/public/index.html'].code;
+  const script = page.match(/<script>([\s\S]*?)<\/script>/)[1];
+  const calls = [];
+  const win = { fetch: async u => { calls.push(String(u)); return { ok: true }; } };
+  const fn = new Function('window', 'location', 'console', script);
+  fn(win, { href: 'https://preview.test/', origin: 'https://preview.test' }, { info() {} });
+  await assert.rejects(win.fetch('/api/dashboard'), /servidor da API/);
+  await assert.rejects(win.fetch('https://preview.test/api/produtos?x=1'), TypeError);
+  await win.fetch('/apiary.json'); await win.fetch('https://cdn.example/data.json');
+  assert.deepEqual(calls, ['/apiary.json', 'https://cdn.example/data.json']);
+  const front = buildSandpackPreviewConfig(files.filter(f => !/^(server|worker)\//.test(f.path)));
+  assert.doesNotMatch(front.files['/public/index.html'].code, /servidor da API/);
+});

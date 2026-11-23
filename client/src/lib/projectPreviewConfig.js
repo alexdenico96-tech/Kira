@@ -155,7 +155,12 @@ export function frontendFilesOnly(files = []) {
   });
 }
 
-function buildReactBrowserPreview(files, pkg) {
+// Sem servidor na pré-visualização, "/api/..." devolveria o index.html (200) e o JSON.parse quebrava
+// ("Unexpected token '<'"). Aqui a chamada falha como se o servidor estivesse desligado, e o projeto
+// entra no modo demonstração que ele mesmo implementa.
+const API_OFFLINE_SHIM = `<script>(function(){var f=window.fetch;if(!f)return;var told=false;window.fetch=function(input,init){try{var raw=typeof input==="string"?input:(input&&input.url)||"";var u=new URL(raw,location.href);if(u.origin===location.origin&&/^\\/api(\\/|$)/.test(u.pathname)){if(!told){told=true;console.info("[Kira] Pré-visualização sem servidor: as chamadas a /api usam o modo demonstração do projeto. Rode o servidor no seu computador para usar o banco de dados.");}return Promise.reject(new TypeError("Failed to fetch (servidor da API não está rodando na pré-visualização)"));}}catch(e){}return f.apply(this,arguments);};})();</script>`;
+
+function buildReactBrowserPreview(files, pkg, { backend = false } = {}) {
   const typescript = isTypeScriptProject(files);
   const projectFiles = {};
   for (const file of files || []) {
@@ -184,6 +189,7 @@ function buildReactBrowserPreview(files, pkg) {
   let page = html || '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body><div id="root"></div></body></html>';
   page = page.replace(/<script[^>]*type=["']module["'][^>]*src=["'](?!https?:)[^"']*["'][^>]*>\s*<\/script>/gi, "");
   if (!/id=["'](?:root|app)["']/.test(page)) page = page.replace(/<body([^>]*)>/i, '<body$1>\n<div id="root"></div>');
+  if (backend) page = /<head[^>]*>/i.test(page) ? page.replace(/<head([^>]*)>/i, `<head$1>\n${API_OFFLINE_SHIM}`) : `${API_OFFLINE_SHIM}\n${page}`;
   if (usesTailwind) {
     const head = tailwindHead(projectFiles, pkg, tailwindCss);
     page = /<\/head>/i.test(page) ? page.replace(/<\/head>/i, `${head}\n</head>`) : `${head}\n${page}`;
@@ -208,9 +214,10 @@ function buildReactBrowserPreview(files, pkg) {
 
 export function buildSandpackPreviewConfig(allFiles = []) {
   const files = frontendFilesOnly(allFiles);
+  const backend = files.length < (Array.isArray(allFiles) ? allFiles.filter(f => !/\.(?:md|sql)$|\.env|\.gitignore$/i.test(String(f?.path || ""))).length : 0);
   const pkg = readPackage(files);
   if (isReactBrowserProject(pkg)) {
-    const browserPreview = buildReactBrowserPreview(files, pkg);
+    const browserPreview = buildReactBrowserPreview(files, pkg, { backend });
     if (browserPreview) return browserPreview;
   }
   const template = selectTemplate(files, pkg);

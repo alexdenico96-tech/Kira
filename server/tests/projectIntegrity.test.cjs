@@ -79,3 +79,19 @@ test('validação final aceita server/ com o próprio package.json e acusa só o
   assert.deepEqual(inspectProjectFiles(fullstack()).issues, ['src/App.jsx: dependência externa não declarada no package.json: lucide-react']);
   assert.deepEqual(inspectProjectFiles(repairMissingDependencies(fullstack()).files).issues, []);
 });
+
+test('modo demonstração: api.js sem checar content-type é apontado; reparo das flags do React Router', async () => {
+  const { inspectProjectIntegrity, repairRouterFutureFlags } = await checks;
+  const naive = swap(fullstack(), 'src/lib/api.js', () => 'const API = "/api";\nexport async function listTasks() { const r = await fetch(`${API}/tasks`); return r.json(); }');
+  const soft = inspectProjectIntegrity(naive, { database: true }).soft.join('\n');
+  assert.match(soft, /content-type/);
+  assert.match(soft, /não tem modo demonstração/);
+  const good = swap(fullstack(), 'src/lib/api.js', () => 'const API = "/api"; const demo = [];\nexport async function listTasks() { try { const r = await fetch(`${API}/tasks`); if (!r.headers.get("content-type")?.includes("application/json")) return demo; return await r.json(); } catch { return demo; } }');
+  assert.deepEqual(inspectProjectIntegrity(good, { database: true }).soft, []);
+  let files = swap(fullstack(), 'package.json', c => { const p = JSON.parse(c); p.dependencies['react-router-dom'] = '^6.28.0'; return JSON.stringify(p); });
+  files = swap(files, 'src/main.jsx', c => c.replace('<App />', '<BrowserRouter><App /></BrowserRouter>'));
+  const r = repairRouterFutureFlags(files);
+  assert.equal(r.fixed, 1);
+  assert.match(r.files.find(f => f.path === 'src/main.jsx').content, /<BrowserRouter future=\{\{ v7_startTransition: true, v7_relativeSplatPath: true \}\}>/);
+  assert.equal(repairRouterFutureFlags(r.files).fixed, 0);
+});

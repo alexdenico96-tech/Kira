@@ -30,7 +30,7 @@ import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImag
 import { extractRequirements, extractRequirementsHeuristic, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
 import { progressStream } from "./lib/progressStream.js";
 import { inspectReactProject } from "./lib/reactChecks.js";
-import { inspectProjectIntegrity, repairMissingDependencies, detectDatabaseRequest, databaseProjectPrompt } from "./lib/projectChecks.js";
+import { inspectProjectIntegrity, repairMissingDependencies, repairRouterFutureFlags, detectDatabaseRequest, databaseProjectPrompt } from "./lib/projectChecks.js";
 import { projectDeliveryMessage } from "./lib/projectDelivery.js";
 import { buildChecklist, checklistBlock, checklistIssues, checklistSize } from "./lib/requestChecklist.js";
 import { detectCarouselRequest, detectCarouselFormat, isCarouselEdit, CREATE_CAROUSEL_TOOL, carouselPlannerPrompt, normalizeCarouselSpec, inspectCarousel, fallbackCarousel, FORMATS as CAROUSEL_FORMATS } from "./lib/carousel/spec.js";
@@ -1294,7 +1294,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         const changes=Array.isArray(args.changes)?args.changes:[];
         const applied=applyFileOperations(existingArtifact.files,changes);
         if(!applied.manifest.created.length&&!applied.manifest.updated.length&&!applied.manifest.deleted.length) throw new Error("Nenhuma alteração válida retornada.");
-        let normalized=repairGeneratedHtml(repairMissingDependencies(applied.files).files);
+        let normalized=repairGeneratedHtml(repairMissingDependencies(repairRouterFutureFlags(applied.files).files).files);
         // KIRA_MEMORY_V1: a edição não pode quebrar o que o pedido original exigia (nem introduzir erros de React).
         const briefReqs=projectBrief?.requirements||[];
         const reactBefore=new Set([...inspectReactProject(existingArtifact.files).issues, ...inspectProjectIntegrity(existingArtifact.files).blocking]);
@@ -1343,7 +1343,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
 
         const normalizeFiles=files=>{
           const base=repairImageSources(repairPackageJsonNewlines(repairWebConnections(files))).files;
-          const deps=repairMissingDependencies(base);
+          const deps=repairMissingDependencies(repairRouterFutureFlags(base).files);
           if(deps.added.length) console.info(`[kira-integrity] deps_added=${deps.added.join(",")}`);
           return deps.files;
         };

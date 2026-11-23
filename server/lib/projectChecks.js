@@ -160,6 +160,13 @@ export function inspectProjectIntegrity(files = [], { database = false } = {}) {
       if (m && !/^(?:usuario|user|senha|password|\$\{)/i.test(m[1] + m[2])) soft.push(`${p}: senha do banco escrita no código; leia de process.env.DATABASE_URL`);
     }
     if (paths.some(p => /(?:^|\/)\.env$/.test(p))) soft.push('não inclua o arquivo .env no projeto (só .env.example)');
+    // Sem servidor (pré-visualização), "/api" pode devolver o index.html com status 200: res.json() quebra com "Unexpected token '<'".
+    const frontApi = paths.filter(p => CODE.test(p) && !/(?:^|\/)(?:server|backend)\//.test(p) && /fetch\s*\(|axios/.test(code(p)) && /\/api\b|API_URL|VITE_API/.test(code(p)));
+    for (const p of frontApi) {
+      const c = code(p);
+      if (/\.json\s*\(\s*\)/.test(c) && !/content-type|application\/json|headers\.get/i.test(c)) soft.push(`${p}: confira res.headers.get("content-type") (application/json) antes de res.json(); sem servidor a resposta pode ser HTML — nesse caso use o modo demonstração`);
+    }
+    if (frontApi.length && !paths.some(p => CODE.test(p) && !/(?:^|\/)(?:server|backend)\//.test(p) && /demo|demonstra|mock|exemplo|sample|fallback/i.test(code(p)))) soft.push('o frontend não tem modo demonstração: quando a API não responder, use dados de exemplo com a mesma forma dos dados reais');
   }
   return { blocking: [...new Set(blocking)].slice(0, 20), soft: [...new Set(soft)].slice(0, 20) };
 }
@@ -176,7 +183,29 @@ PROJETO COM BANCO DE DADOS POSTGRESQL (obrigatório seguir esta estrutura):
 - server/seed.sql: dados de exemplo realistas (INSERT ... ON CONFLICT DO NOTHING).
 - server/scripts/setup-db.js: lê schema.sql e seed.sql e executa no banco (assim o usuário não precisa do psql instalado).
 - server/.env.example: DATABASE_URL=postgresql://usuario:senha@localhost:5432/nome_do_banco, DATABASE_SSL=false, PORT=3001. Nunca coloque senhas reais nem um arquivo .env.
-- Frontend: src/lib/api.js com const API = import.meta.env.VITE_API_URL || "/api" e funções para cada rota; vite.config.js com server.proxy { "/api": "http://localhost:3001" }. Se o servidor não responder (ex.: na pré-visualização da Kira), use dados de demonstração em memória com a MESMA forma dos dados reais e mostre um aviso discreto "Modo demonstração — conecte o servidor para salvar no banco". Estados de carregando, vazio e erro em todas as telas.
+- Frontend: src/lib/api.js com const API = import.meta.env.VITE_API_URL || "/api" e UMA função request() usada por todas as rotas; vite.config.js com server.proxy { "/api": "http://localhost:3001" }.
+- request() deve: (1) tratar erro de rede; (2) conferir res.headers.get("content-type") inclui "application/json" ANTES de res.json() — sem servidor, alguns ambientes devolvem o index.html com status 200; (3) tratar !res.ok lendo a mensagem de erro do JSON. Em qualquer desses casos de servidor indisponível, entre no MODO DEMONSTRAÇÃO: dados de exemplo em memória com a MESMA forma dos dados reais (e operações de criar/editar/excluir funcionando sobre eles) e um aviso discreto "Modo demonstração — conecte o servidor para salvar no banco". Estados de carregando, vazio e erro em todas as telas.
+- React Router v6: use <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>.
 - .gitignore na raiz com node_modules, dist e .env.
 - README.md com: requisitos (Node 18+, PostgreSQL), como criar o banco (local ou serviço na nuvem), copiar server/.env.example para server/.env, npm install e npm run db:setup dentro de server/, npm run dev no server e na raiz (dois terminais), e as rotas da API.`;
+}
+
+/** React Router v6: liga as flags da v7 no <BrowserRouter> (remove os avisos amarelos do console). */
+export function repairRouterFutureFlags(files = []) {
+  const list = Array.isArray(files) ? files : [];
+  const pkgFile = list.find(f => norm(f.path) === 'package.json');
+  let version = '';
+  try { const pkg = JSON.parse(pkgFile?.content || '{}'); version = String(pkg.dependencies?.['react-router-dom'] || pkg.dependencies?.['react-router'] || ''); } catch { /* sem package.json */ }
+  if (!/^\D*6/.test(version)) return { files: list, fixed: 0 };
+  let fixed = 0;
+  const next = list.map(f => {
+    if (!CODE.test(norm(f.path)) || typeof f.content !== 'string' || !/<(?:BrowserRouter|HashRouter|Router)\b/.test(f.content) || /v7_startTransition/.test(f.content)) return f;
+    const content = f.content.replace(/<(BrowserRouter|HashRouter)(\s[^>]*)?>/g, (m, tag, attrs = '') => {
+      if (/future\s*=/.test(attrs)) return m;
+      fixed++;
+      return `<${tag}${attrs} future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>`;
+    });
+    return content === f.content ? f : { ...f, content };
+  });
+  return { files: next, fixed };
 }
