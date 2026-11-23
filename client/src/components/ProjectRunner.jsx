@@ -28,6 +28,22 @@ function ProjectDiagnostics({ onDiagnosticsChange }) {
     onDiagnosticsChange?.(visibleError);
   }, [visibleError, onDiagnosticsChange]);
 
+  // KIRA_FULLSTACK_PREVIEW_V1: tempo esgotado não é erro do código — explica e deixa tentar de novo.
+  if (sandpack.status === "timeout") {
+    return (
+      <div className="border-t border-amber-500/30 bg-amber-950/30 p-3 text-sm text-amber-100">
+        <p className="font-semibold">A pré-visualização demorou demais para iniciar.</p>
+        <p className="mt-1 text-xs text-amber-200/80">
+          Isso não é erro no seu projeto: o empacotador do navegador (CodeSandbox) não respondeu a tempo. Costuma acontecer com internet lenta,
+          bloqueadores de anúncio/extensões de privacidade que bloqueiam <code>codesandbox.io</code>, ou na primeira vez que as bibliotecas são baixadas.
+        </p>
+        <button type="button" onClick={() => sandpack.runSandpack()} className="mt-2 rounded-lg bg-amber-400/90 px-3 py-1.5 text-xs font-semibold text-black hover:bg-amber-300">
+          Tentar novamente
+        </button>
+      </div>
+    );
+  }
+
   if (!visibleError) return null;
 
   return (
@@ -58,6 +74,8 @@ export default function ProjectRunner({ files = [], onDiagnosticsChange }) {
         customSetup={preview.customSetup}
         options={{
           autorun: true,
+          // Projetos grandes baixam muitas dependências na primeira execução (padrão do Sandpack: 40 s).
+          bundlerTimeOut: 90000,
           recompileMode: "delayed",
           recompileDelay: 500
         }}

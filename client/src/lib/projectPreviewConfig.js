@@ -137,6 +137,24 @@ function tailwindHead(projectFiles, pkg, tailwindCss) {
   return `<script src="https://cdn.tailwindcss.com"></script>\n${config}\n<style type="text/tailwindcss">${css}</style>`;
 }
 
+// KIRA_FULLSTACK_PREVIEW_V1: o preview roda só o frontend. Backend (server/ com o próprio package.json,
+// Express, pg, scripts Node), SQL e .env não rodam no navegador e travavam o empacotador (TIME_OUT).
+const BACKEND_DIR = /^\/(?:server|backend|api-server)\//i;
+const NON_FRONTEND_FILE = /\.(?:sql|md|ya?ml|toml|lock)$|(?:^|\/)(?:\.env(?:\..*)?|\.gitignore|\.dockerignore|Dockerfile|Procfile|package-lock\.json)$/i;
+export function frontendFilesOnly(files = []) {
+  const list = Array.isArray(files) ? files : [];
+  const nestedPackageDirs = list
+    .map(file => normalizeProjectPath(file?.path))
+    .filter(path => /\/package\.json$/.test(path) && path !== "/package.json")
+    .map(path => path.slice(0, -"package.json".length));
+  return list.filter(file => {
+    const path = normalizeProjectPath(file?.path);
+    if (path === "/package.json") return true;
+    if (BACKEND_DIR.test(path) || NON_FRONTEND_FILE.test(path)) return false;
+    return !nestedPackageDirs.some(dir => path.startsWith(dir));
+  });
+}
+
 function buildReactBrowserPreview(files, pkg) {
   const typescript = isTypeScriptProject(files);
   const projectFiles = {};
@@ -188,7 +206,8 @@ function buildReactBrowserPreview(files, pkg) {
   };
 }
 
-export function buildSandpackPreviewConfig(files = []) {
+export function buildSandpackPreviewConfig(allFiles = []) {
+  const files = frontendFilesOnly(allFiles);
   const pkg = readPackage(files);
   if (isReactBrowserProject(pkg)) {
     const browserPreview = buildReactBrowserPreview(files, pkg);
