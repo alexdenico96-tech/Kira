@@ -88,8 +88,25 @@ export function inspectProjectFiles(files = []) {
     for (const name of Object.keys(values)) declared.add(name);
   }
 
+  // KIRA_PROJECT_INTEGRITY_V1: cada arquivo usa o package.json mais próximo (server/ tem o próprio em projetos full-stack).
+  const nestedDeclared = new Map();
+  for (const [name, content] of map) {
+    if (!/\/package\.json$/.test(name)) continue;
+    try {
+      const nested = JSON.parse(content);
+      nestedDeclared.set(name.slice(0, -'package.json'.length - 1), new Set(dependencySections.flatMap(section => Object.keys(nested?.[section] || {}))));
+    } catch { issues.push(`${name} contém JSON inválido`); }
+  }
+  const declaredFor = filename => {
+    for (let dir = filename.includes('/') ? filename.slice(0, filename.lastIndexOf('/')) : ''; dir; dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '') {
+      if (nestedDeclared.has(dir)) return nestedDeclared.get(dir);
+    }
+    return pkg ? declared : null;
+  };
+
   for (const [filename, content] of map) {
     if (!/\.(?:[cm]?js|jsx|ts|tsx|vue|svelte|astro)$/i.test(filename)) continue;
+    const fileDeclared = declaredFor(filename);
     for (const specifier of extractImportSpecifiers(content)) {
       if (specifier.startsWith('.')) {
         const result = resolveLocalImport(filename, specifier, map);
@@ -105,9 +122,9 @@ export function inspectProjectFiles(files = []) {
 
       const root = specifier.split('/')[0];
       if (builtins.has(root)) continue;
-      if (pkg && !declared.has(packageName(specifier))) {
+      if (fileDeclared && !fileDeclared.has(packageName(specifier))) {
         issues.push(`${filename}: dependência externa não declarada no package.json: ${packageName(specifier)}`);
-      } else if (!pkg) {
+      } else if (!fileDeclared) {
         warnings.push(`${filename}: dependência externa encontrada sem package.json: ${packageName(specifier)}`);
       }
     }

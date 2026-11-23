@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, FileType2, Images, Copy, Check, Loader2, ImageDown } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileType2, Images, Copy, Check, Loader2, ImageDown, Smartphone } from "lucide-react";
 import { downloadFile } from "../lib/api.js";
 
 // KIRA_CAROUSEL_V1: visualizador deslizável + downloads (ZIP, PDF, slide atual) + legenda pronta para copiar.
 const T = {
-  pt: { zip: "Baixar imagens (ZIP)", pdf: "PDF (LinkedIn)", slide: "Este slide", caption: "Legenda do post", copy: "Copiar", copied: "Copiado", prev: "Slide anterior", next: "Próximo slide", of: "de" },
-  es: { zip: "Descargar imágenes (ZIP)", pdf: "PDF (LinkedIn)", slide: "Esta diapositiva", caption: "Texto del post", copy: "Copiar", copied: "Copiado", prev: "Anterior", next: "Siguiente", of: "de" },
-  en: { zip: "Download images (ZIP)", pdf: "PDF (LinkedIn)", slide: "This slide", caption: "Post caption", copy: "Copy", copied: "Copied", prev: "Previous slide", next: "Next slide", of: "of" }
+  pt: { again: "Slides prontos — toque de novo em Salvar no celular.", phone: "Salvar no celular", phoneHint: "Escolha \"Salvar imagens\" ou o Instagram no menu do celular.", zip: "Baixar imagens (ZIP)", pdf: "PDF (LinkedIn)", slide: "Este slide", caption: "Legenda do post", copy: "Copiar", copied: "Copiado", prev: "Slide anterior", next: "Próximo slide", of: "de" },
+  es: { again: "Diapositivas listas — toca de nuevo en Guardar en el celular.", phone: "Guardar en el celular", phoneHint: "Elige \"Guardar imágenes\" o Instagram en el menú del celular.", zip: "Descargar imágenes (ZIP)", pdf: "PDF (LinkedIn)", slide: "Esta diapositiva", caption: "Texto del post", copy: "Copiar", copied: "Copiado", prev: "Anterior", next: "Siguiente", of: "de" },
+  en: { again: "Slides ready — tap Save to phone again.", phone: "Save to phone", phoneHint: "Pick \"Save images\" or Instagram in your phone's menu.", zip: "Download images (ZIP)", pdf: "PDF (LinkedIn)", slide: "This slide", caption: "Post caption", copy: "Copy", copied: "Copied", prev: "Previous slide", next: "Next slide", of: "of" }
 };
 
 function saveBlob(blob, name) {
@@ -25,6 +25,24 @@ export default function CarouselCard({ file, token }) {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  // KIRA_CAROUSEL_SHARE_V1: no celular, o menu de compartilhar salva tudo na galeria (ou manda direto ao Instagram).
+  const [canShareFiles, setCanShareFiles] = useState(false);
+  const shareFilesRef = useRef(null);
+  const loadShareFiles = () => Promise.all((file?.carousel?.slides || []).map(async (s, i) => {
+    const res = await fetch(s.url);
+    if (!res.ok) throw new Error("Não consegui preparar os slides.");
+    return new File([await res.blob()], s.name || `slide-${String(i + 1).padStart(2, "0")}.png`, { type: "image/png" });
+  }));
+  useEffect(() => {
+    if (!canShareFiles || shareFilesRef.current) return;
+    loadShareFiles().then(files => { shareFilesRef.current = files; }).catch(() => {});
+  }, [canShareFiles]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    try {
+      const probe = new File([new Uint8Array([137, 80, 78, 71])], "probe.png", { type: "image/png" });
+      setCanShareFiles(Boolean(navigator.canShare?.({ files: [probe] }) && /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)));
+    } catch { setCanShareFiles(false); }
+  }, []);
   const slides = c?.slides || [];
 
   useEffect(() => {
@@ -60,6 +78,20 @@ export default function CarouselCard({ file, token }) {
     }
   }
 
+  async function shareToPhone() {
+    setError("");
+    // Já preparados: o menu abre direto no toque (exigência do Safari/iOS).
+    const files = shareFilesRef.current;
+    if (captionText) navigator.clipboard?.writeText(captionText).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2500); }).catch(() => {});
+    if (!files) {
+      setBusy("phone");
+      try { shareFilesRef.current = await loadShareFiles(); setError(t.again); } catch (err) { setError(err.message); } finally { setBusy(""); }
+      return;
+    }
+    try { await navigator.share({ files, title: file.title || "Carrossel" }); }
+    catch (err) { if (err?.name !== "AbortError") setError(err.message || "Não consegui abrir o compartilhamento."); }
+  }
+
   async function copyCaption() {
     try { await navigator.clipboard.writeText(captionText); setCopied(true); setTimeout(() => setCopied(false), 1800); }
     catch { setError("Não consegui copiar; selecione o texto e copie manualmente."); }
@@ -93,7 +125,12 @@ export default function CarouselCard({ file, token }) {
           <p className="kira-file-card__meta"><span className="kira-file-card__badge" style={{ "--file-color": "#C2562B" }}>Carrossel</span>{file.summary}</p>
         </div>
         <div className="kira-carousel__actions">
-          <button type="button" className="kira-file-card__btn kira-file-card__btn--primary" onClick={() => download("zip")} disabled={Boolean(busy)}>
+          {canShareFiles && (
+            <button type="button" className="kira-file-card__btn kira-file-card__btn--primary kira-carousel__phone" onClick={shareToPhone} disabled={Boolean(busy)} title={t.phoneHint}>
+              {busy === "phone" ? <Loader2 size={15} className="animate-spin" /> : <Smartphone size={15} />} {t.phone}
+            </button>
+          )}
+          <button type="button" className={`kira-file-card__btn${canShareFiles ? "" : " kira-file-card__btn--primary"}`} onClick={() => download("zip")} disabled={Boolean(busy)}>
             {busy === "zip" ? <Loader2 size={15} className="animate-spin" /> : <Images size={15} />} {t.zip}
           </button>
           {c.pdf?.id && (
@@ -105,6 +142,7 @@ export default function CarouselCard({ file, token }) {
             {busy === "slide" ? <Loader2 size={15} className="animate-spin" /> : <ImageDown size={15} />} {t.slide}
           </button>
         </div>
+        {canShareFiles && <p className="text-[11.5px] leading-snug text-mist">{t.phoneHint}{captionText ? ` ${file.lang === "es" ? "El texto del post se copia automáticamente." : file.lang === "en" ? "The caption is copied automatically." : "A legenda é copiada automaticamente."}` : ""}</p>}
       </div>
 
       {captionText && (

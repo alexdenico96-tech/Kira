@@ -60,6 +60,9 @@ const DOCUMENT_TOOL = {
           required: ["id", "files"]
         }
       },
+      // KIRA_PROJECT_DELIVERY_V1: explicação para o usuário, no idioma dele.
+      summary: { type: "STRING", description: "O que foi construído, em 3 a 5 tópicos curtos (um por linha) no idioma do usuário: telas, funcionalidades e decisões importantes. Sem markdown de título." },
+      suggestions: { type: "ARRAY", items: { type: "STRING" }, description: "3 próximos passos concretos e específicos para ESTE projeto (ex.: 'Adicionar login com e-mail e senha para cada cliente'), no idioma do usuário." },
     },
     required: ["projectName", "files"]
   }
@@ -85,7 +88,8 @@ const UPDATE_ARTIFACT_TOOL = {
           required: ["action","path"]
         }
       },
-      summary: { type: "STRING" }
+      summary: { type: "STRING", description: "O que foi alterado, em 1 a 4 tópicos curtos (um por linha) no idioma do usuário." },
+      suggestions: { type: "ARRAY", items: { type: "STRING" }, description: "2 ou 3 próximos passos específicos para este projeto, no idioma do usuário." }
     },
     required: ["changes","summary"]
   }

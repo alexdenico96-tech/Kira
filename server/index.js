@@ -30,6 +30,8 @@ import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImag
 import { extractRequirements, extractRequirementsHeuristic, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
 import { progressStream } from "./lib/progressStream.js";
 import { inspectReactProject } from "./lib/reactChecks.js";
+import { inspectProjectIntegrity, repairMissingDependencies, detectDatabaseRequest, databaseProjectPrompt } from "./lib/projectChecks.js";
+import { projectDeliveryMessage } from "./lib/projectDelivery.js";
 import { buildChecklist, checklistBlock, checklistIssues, checklistSize } from "./lib/requestChecklist.js";
 import { detectCarouselRequest, detectCarouselFormat, isCarouselEdit, CREATE_CAROUSEL_TOOL, carouselPlannerPrompt, normalizeCarouselSpec, inspectCarousel, fallbackCarousel, FORMATS as CAROUSEL_FORMATS } from "./lib/carousel/spec.js";
 import { renderCarousel, measureCarousel, carouselPdf, carouselZip } from "./lib/carousel/render.js";
@@ -1109,6 +1111,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
 
     let reply, imageUrl, documentName, documentContent, artifactName, artifactFiles, responseArtifactId, artifactVersion;
     let fidelityNote = "";
+    let deliveryInfo = null; // KIRA_PROJECT_DELIVERY_V1
     let searchInfo = null; // fontes da pesquisa na web, quando houver
     let fileMeta = null; // arquivo gerado (PDF, Word, Excel, CSV, PowerPoint)
     let requirements = []; // checklist de fidelidade (também usado no fallback Groq)
@@ -1238,9 +1241,12 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         step('design', 'Direção visual definida', `${brief.domain} · ${brief.fonts.display} + ${brief.fonts.body}`, 'done');
         step('build', 'Construindo o projeto', 'escrevendo os arquivos');
       } else if (editingArtifact && !reply) step('edit', 'Aplicando as alterações');
-      const projectPrompt = (issues=[]) => isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,issues,requirements) : artifactQualityPrompt(textMessage,issues);
+      // KIRA_PROJECT_INTEGRITY_V1: projetos com banco seguem a estrutura full-stack e passam pelas checagens completas.
+      const databaseProject = Boolean((wantsArtifact || editingArtifact) && detectDatabaseRequest(textMessage));
+      const deliveryAsk = "\n\nAo chamar a função, preencha também summary (o que foi feito, 3 a 5 tópicos curtos) e suggestions (3 próximos passos específicos para este projeto), no idioma do pedido.";
+      const projectPrompt = (issues=[]) => (isComplexProjectRequest(textMessage) || databaseProject ? developerPrompt(textMessage,issues,requirements) : artifactQualityPrompt(textMessage,issues)) + (databaseProject ? databaseProjectPrompt() : "") + deliveryAsk;
       const aiContents = editingArtifact
-        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage, projectBrief) }, ...referenceParts] }]
+        ? [{ role: "user", parts: [{ text: artifactEditPrompt(existingArtifact, textMessage, projectBrief) + (databaseProject ? databaseProjectPrompt() : "") + deliveryAsk }, ...referenceParts] }]
         : (wantsArtifact
           ? [...history, { role: "user", parts: [{ text: projectPrompt() }, ...referenceParts] }]
           : contents);
@@ -1288,15 +1294,16 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         const changes=Array.isArray(args.changes)?args.changes:[];
         const applied=applyFileOperations(existingArtifact.files,changes);
         if(!applied.manifest.created.length&&!applied.manifest.updated.length&&!applied.manifest.deleted.length) throw new Error("Nenhuma alteração válida retornada.");
-        let normalized=repairGeneratedHtml(applied.files);
+        let normalized=repairGeneratedHtml(repairMissingDependencies(applied.files).files);
         // KIRA_MEMORY_V1: a edição não pode quebrar o que o pedido original exigia (nem introduzir erros de React).
         const briefReqs=projectBrief?.requirements||[];
-        const reactBefore=new Set(inspectReactProject(existingArtifact.files).issues);
+        const reactBefore=new Set([...inspectReactProject(existingArtifact.files).issues, ...inspectProjectIntegrity(existingArtifact.files).blocking]);
         const regressions=()=>{
           const before=verifyRequirements(existingArtifact.files,briefReqs);
           const after=verifyRequirements(normalized.files,briefReqs);
           const lost=after.missing.filter(m=>!before.missing.some(b=>b.id===m.id));
-          const newReact=inspectReactProject(normalized.files).issues.filter(i=>!reactBefore.has(i));
+          const newReact=[...inspectReactProject(normalized.files).issues, ...inspectProjectIntegrity(normalized.files,{database:databaseProject}).blocking].filter(i=>!reactBefore.has(i));
+          if(databaseProject) newReact.push(...inspectProjectIntegrity(normalized.files,{database:true}).soft.filter(i=>!reactBefore.has(i)));
           return { lost, newReact, issues:[...lost.map(r=>`a edição removeu/quebrou o requisito original "${r.text}" (${r.reason})`), ...newReact] };
         };
         let regression=regressions();
@@ -1310,7 +1317,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             if(fixChanges.length){
               const fixed=applyFileOperations(normalized.files,fixChanges);
               const previous=normalized;
-              normalized=repairGeneratedHtml(fixed.files);
+              normalized=repairGeneratedHtml(repairMissingDependencies(fixed.files).files);
               const after=regressions();
               if(after.issues.length<=regression.issues.length){
                 regression=after;
@@ -1324,6 +1331,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
         step('edit', 'Alterações aplicadas', `${applied.manifest.created.length+applied.manifest.updated.length+applied.manifest.deleted.length} arquivo(s) · v${artifactVersion}`, 'done');
         reply=`Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
+        deliveryInfo={ mode:"edit", summary:args.summary||"", suggestions:args.suggestions||[], manifest:applied.manifest };
       } else if (functionCall?.name === "create_document") {
         const parseArtifactArgs = (args={}) => ({
           name: args.projectName || "projeto",
@@ -1333,22 +1341,30 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             : []
         });
 
-        const normalizeFiles=files=>repairImageSources(repairPackageJsonNewlines(repairWebConnections(files))).files;
-        const complex=isComplexProjectRequest(textMessage);
+        const normalizeFiles=files=>{
+          const base=repairImageSources(repairPackageJsonNewlines(repairWebConnections(files))).files;
+          const deps=repairMissingDependencies(base);
+          if(deps.added.length) console.info(`[kira-integrity] deps_added=${deps.added.join(",")}`);
+          return deps.files;
+        };
+        const complex=isComplexProjectRequest(textMessage) || databaseProject;
         // Avalia uma versão do projeto: estrutura (bloqueia), requisitos (fidelidade) e visual (acabamento).
         const evaluate=(files,coverage)=>{
           const quality=validateArtifact(files,textMessage);
           const dev=complex ? analyzeProject(files,textMessage) : {ok:true,issues:[]};
           const visual=inspectVisualQuality(files,textMessage);
           const req=verifyRequirements(files,requirements,coverage);
-          return { files: quality.files.length ? quality.files : files, coverage, structural:[...quality.issues,...dev.issues], visual, req,
-            issues:[...quality.issues,...dev.issues,...requirementIssues(req),...visual.issues] };
+          const integrity=inspectProjectIntegrity(files,{database:databaseProject});
+          const structural=[...new Set([...quality.issues,...dev.issues,...integrity.blocking])];
+          return { files: quality.files.length ? quality.files : files, coverage, structural, soft:integrity.soft, visual, req,
+            issues:[...structural,...requirementIssues(req),...integrity.soft,...visual.issues] };
         };
         // Melhor versão: menos erros estruturais, depois mais requisitos atendidos, depois melhor nota visual.
         const better=(a,b)=> a.structural.length!==b.structural.length ? a.structural.length<b.structural.length
           : a.req.missing.length!==b.req.missing.length ? a.req.missing.length<b.req.missing.length
+          : a.soft.length!==b.soft.length ? a.soft.length<b.soft.length
           : a.visual.score>=b.visual.score;
-        const logEval=(label,e)=>console.info(`[kira-developer] ${label} structural=${e.structural.length} requirements=${e.req.covered}/${e.req.total} visual=${e.visual.score}`);
+        const logEval=(label,e)=>console.info(`[kira-developer] ${label} structural=${e.structural.length} requirements=${e.req.covered}/${e.req.total} integrity_soft=${e.soft.length} visual=${e.visual.score}${e.structural.length?` first="${e.structural[0].slice(0,100)}"`:""}`);
 
         const finishReason=candidate?.finishReason;
         if(finishReason && finishReason!=="STOP") console.warn(`[kira-developer] finish_reason=${finishReason}`);
@@ -1375,9 +1391,10 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             if(better(retried,best)) best=retried;
           }
         }
-        for(let pass=1; pass<=2 && best.issues.length; pass++){
+        for(let pass=1; pass<=(databaseProject?3:2) && best.issues.length; pass++){
           // Problemas só visuais na 2ª passada não justificam outra chamada.
-          if(pass===2 && !best.structural.length && !best.req.missing.length) break;
+          if(pass===2 && !best.structural.length && !best.req.missing.length && !best.soft.length) break;
+          if(pass===3 && !best.structural.length && !best.soft.length) break; // 3ª passada só para erros e banco de dados
           try{
             const fixData=await callGemini({ systemInstruction:systemPrompt(), contents:[{role:"user",parts:[{text:projectFixPrompt(textMessage,best,requirements)}, ...referenceParts]}], forceFunctionName:"update_artifact" });
             const fixCall=(fixData.candidates?.[0]?.content?.parts||[]).find(p=>p.functionCall)?.functionCall;
@@ -1403,6 +1420,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
         artifactName=projectName;
         artifactFiles=best.files;
         reply=artifactSuccessReply(artifactFiles); fidelityNote=requirementsNote(best.req);
+        deliveryInfo={ mode:"create", summary:functionCall.args?.summary||"", suggestions:functionCall.args?.suggestions||[] };
       } else if (functionCall?.name === "control_device") {
         const { domain, service, entity_id } = functionCall.args || {};
         try {
@@ -1440,6 +1458,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             const updated=await saveVersionWithOperations(req.user.id,existingArtifact.id,await withProjectImages(normalized.files),patch.summary,applied.manifest);
             artifactName=updated.name; artifactFiles=updated.files; responseArtifactId=updated.id; artifactVersion=updated.version;
             reply = `Atualizei **${artifactName}** para a **v${artifactVersion}**.`;
+            deliveryInfo = { mode: "edit", summary: patch.summary || "", suggestions: [], manifest: applied.manifest };
           } else if (wantsArtifact) {
             // KIRA_PROJECT_ARTIFACT_FIX_V1: usar modelo comprovado em projetos.
             const artifact = await callGroqArtifactFallback({ systemInstruction: systemPrompt(), message: isComplexProjectRequest(textMessage) ? developerPrompt(textMessage,[],requirements) : artifactQualityPrompt(textMessage), preferredModel: process.env.KIRA_ARTIFACT_GROQ_MODEL || "openai/gpt-oss-120b", onSelectedModel: (model) => { selectedModel=model; } });
@@ -1525,6 +1544,7 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
             const groqReq = verifyRequirements(artifactFiles, requirements, []);
             if (requirements.length) console.info(`[kira-developer] provider=groq requirements=${groqReq.covered}/${groqReq.total}`);
             reply = artifactSuccessReply(artifactFiles); fidelityNote = requirementsNote(groqReq);
+            deliveryInfo = { mode: "create", summary: "", suggestions: [] };
           } else {
             reply = await callGroqFallback({ systemInstruction: systemPrompt(), message: textMessage, history: groqHistory, onSelectedModel: (model) => { selectedModel=model; } });
           }
@@ -1641,6 +1661,13 @@ if (syntax.issues.length) {
       } catch (error) { console.warn(`[kira-syntax] validator_error=${error.message}`); return res.status(422).json({ error: "Projeto não salvo: não foi possível verificar a sintaxe." }); }
     }
     if (artifactFiles?.length) step('quality', 'Validação final concluída', '', 'done');
+    // KIRA_PROJECT_DELIVERY_V1: entrega explicada (o que foi feito, como rodar, banco, estrutura e sugestões).
+    if (deliveryInfo && artifactFiles?.length) {
+      try {
+        reply = projectDeliveryMessage({ ...deliveryInfo, files: artifactFiles, name: artifactName || "Projeto", version: artifactVersion || 1,
+          lang: ["pt", "es", "en"].includes(detectLanguage(textMessage, "pt")) ? detectLanguage(textMessage, "pt") : "pt" });
+      } catch (deliveryErr) { console.warn("[kira-delivery] falhou:", deliveryErr.message); }
+    }
     if (fidelityNote && artifactFiles?.length) reply += fidelityNote;
     if (artifactFiles?.length && !responseArtifactId) {
       artifactFiles = await withProjectImages(artifactFiles);

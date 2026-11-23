@@ -41,7 +41,15 @@ if (/\.(?:jsx|tsx|ts)$/i.test(name) || bundledJs) {
     // Vite carrega vite.config.js por um loader que suporta ESM mesmo sem package.json type=module.
     // A checagem via stdin deve refletir essa semântica, sem executar código.
     const viteConfig = /(?:^|\/)vite\.config\.js$/i.test(name);
-    const mode = name.endsWith('.mjs') ? 'module' : name.endsWith('.cjs') ? 'commonjs' : viteConfig ? 'module' : type;
+    // KIRA_PROJECT_INTEGRITY_V1: o package.json mais próximo decide ESM/CommonJS (server/ pode ter o próprio).
+    let localType = type;
+    for (let dir = path.posix.dirname(name); ; dir = path.posix.dirname(dir)) {
+      const key = dir === '.' ? 'package.json' : `${dir}/package.json`;
+      const own = all.find(x => String(x?.path || '').replaceAll('\\', '/').replace(/^\.\//, '') === key);
+      if (own) { try { localType = JSON.parse(own.content)?.type === 'module' ? 'module' : 'commonjs'; } catch { /* JSON inválido tratado no gate */ } break; }
+      if (dir === '.' || dir === '/' || dir === '') break;
+    }
+    const mode = name.endsWith('.mjs') ? 'module' : name.endsWith('.cjs') ? 'commonjs' : viteConfig ? 'module' : localType;
     // Node's --check parses stdin but never evaluates the source.
     const run = spawnSync(process.execPath, ['--input-type=' + mode, '--check'], {
       input: f.content, encoding: 'utf8', timeout: 1800, maxBuffer: 32 * 1024,

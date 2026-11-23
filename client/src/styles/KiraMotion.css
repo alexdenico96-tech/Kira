@@ -693,6 +693,7 @@ html.light {
 .kira-carousel__dots button.is-active { width: 18px; background: var(--file-color); }
 .kira-carousel__bar { display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
 .kira-carousel__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kira-carousel__phone { flex: 1 1 100%; padding-top: 11px; padding-bottom: 11px; font-size: 13.5px; }
 .kira-carousel__caption { margin: 0 14px 14px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--kira-line); background: color-mix(in srgb, var(--kira-panel) 70%, transparent); }
 .kira-carousel__caption p { margin-top: 8px; font-size: 13px; line-height: 1.55; color: var(--kira-text); white-space: pre-wrap; max-height: 9.5em; overflow-y: auto; }
 .kira-carousel__copy { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; color: var(--kira-text); border: 1px solid var(--kira-line); transition: border-color .2s ease; }
