@@ -68,12 +68,12 @@ export const deleteConversation = (token, id) => request(`/conversations/${id}`,
 
 export const deleteAllConversations = (token) => request("/conversations", { method: "DELETE", token });
 
-export const sendMessage = (token, message, conversationId, { image, audio, artifactId } = {}) =>
-  request("/chat", { method: "POST", token, body: { message, conversationId, image, audio, artifactId } });
+export const sendMessage = (token, message, conversationId, { image, images, audio, artifactId } = {}) =>
+  request("/chat", { method: "POST", token, body: { message, conversationId, image, images, audio, artifactId } });
 
 // KIRA_PROGRESS_STREAM_V1: recebe as fases em tempo real (NDJSON) e devolve a resposta final.
 // Se o servidor responder JSON comum (versão antiga), funciona igual ao sendMessage.
-export async function sendMessageStream(token, message, conversationId, { image, audio, artifactId } = {}, onProgress) {
+export async function sendMessageStream(token, message, conversationId, { image, images, audio, artifactId } = {}, onProgress) {
   const res = await fetch(`${BASE}/chat`, {
     method: "POST",
     headers: {
@@ -81,7 +81,7 @@ export async function sendMessageStream(token, message, conversationId, { image,
       Accept: "application/x-ndjson",
       ...(token ? { Authorization: `Bearer ${token}` } : {})
     },
-    body: JSON.stringify({ message, conversationId, image, audio, artifactId })
+    body: JSON.stringify({ message, conversationId, image, images, audio, artifactId })
   });
   const type = res.headers.get("content-type") || "";
   if (!type.includes("ndjson") || !res.body) {

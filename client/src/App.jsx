@@ -167,7 +167,7 @@ export default function App() {
 
   async function handleSubmit(text, attachments = {}) {
     const value = (text ?? input).trim();
-    const { image, audio } = attachments;
+    const { image, images, audio } = attachments;
 
     if (!value && !image && !audio) return false;
     if (submittingRef.current) return false;
@@ -183,7 +183,9 @@ export default function App() {
           : "") // só áudio: o balão mostra o que a Kira ouviu (transcrição)
     };
 
-    if (image) {
+    if (images?.length > 1) {
+      userMessage.previewImages = images.map(img => `data:${img.mimeType};base64,${img.data}`);
+    } else if (image) {
       userMessage.previewImage =
         `data:${image.mimeType};base64,${image.data}`;
     }
@@ -229,6 +231,7 @@ export default function App() {
         activeId,
         {
           image,
+          images,
           audio,
           artifactId: activeArtifact?.id || null
         },

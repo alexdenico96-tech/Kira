@@ -663,6 +663,41 @@ html.light {
   .kira-file-card { flex-wrap: wrap; }
 }
 
+.kira-carousel {
+  --file-color: #C2562B;
+  margin-top: 14px;
+  width: min(100%, 360px);
+  border-radius: 22px;
+  border: 1px solid color-mix(in srgb, var(--file-color) 30%, var(--kira-line));
+  background: color-mix(in srgb, var(--kira-panel2) 82%, transparent);
+  overflow: hidden;
+  animation: kiraStepIn .5s cubic-bezier(.2, .8, .2, 1) both;
+}
+.kira-carousel__stage { position: relative; background: #0b0b0d; }
+.kira-carousel__track { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; outline: none; }
+.kira-carousel__track::-webkit-scrollbar { display: none; }
+.kira-carousel__slide { flex: 0 0 100%; scroll-snap-align: center; scroll-snap-stop: always; }
+.kira-carousel__slide img { display: block; width: 100%; height: 100%; object-fit: cover; user-select: none; }
+.kira-carousel__nav {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 36px; height: 36px; border-radius: 999px;
+  color: #111; background: rgba(255,255,255,.88); box-shadow: 0 6px 18px -6px rgba(0,0,0,.5);
+  transition: transform .2s ease, background .2s ease;
+}
+.kira-carousel__nav:hover { background: #fff; transform: translateY(-50%) scale(1.06); }
+.kira-carousel__nav--prev { left: 10px; }
+.kira-carousel__nav--next { right: 10px; }
+.kira-carousel__counter { position: absolute; top: 10px; right: 10px; padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: #fff; background: rgba(0,0,0,.55); backdrop-filter: blur(6px); }
+.kira-carousel__dots { display: flex; justify-content: center; gap: 6px; padding: 10px 12px 2px; }
+.kira-carousel__dots button { width: 6px; height: 6px; border-radius: 999px; background: color-mix(in srgb, var(--kira-muted) 45%, transparent); transition: width .25s ease, background .25s ease; }
+.kira-carousel__dots button.is-active { width: 18px; background: var(--file-color); }
+.kira-carousel__bar { display: flex; flex-direction: column; gap: 10px; padding: 10px 14px 12px; }
+.kira-carousel__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kira-carousel__caption { margin: 0 14px 14px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--kira-line); background: color-mix(in srgb, var(--kira-panel) 70%, transparent); }
+.kira-carousel__caption p { margin-top: 8px; font-size: 13px; line-height: 1.55; color: var(--kira-text); white-space: pre-wrap; max-height: 9.5em; overflow-y: auto; }
+.kira-carousel__copy { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; color: var(--kira-text); border: 1px solid var(--kira-line); transition: border-color .2s ease; }
+.kira-carousel__copy:hover { border-color: var(--file-color); }
+
 /* ---------- PÁGINA DE ENTRADA ---------- */
 
 .kira-landing { overflow-x: hidden; }

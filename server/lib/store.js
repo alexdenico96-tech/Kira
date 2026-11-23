@@ -555,6 +555,12 @@ export async function saveGeneratedFile(userId, { id, name, format, mime, buffer
   return { id, name, format, mime, size: buffer.length, summary: summary || "" };
 }
 
+// KIRA_CAROUSEL_V1: leitura sem usuário — só depois de conferir a assinatura HMAC do link.
+export async function getGeneratedFileUnchecked(id) {
+  const { rows } = await pool.query(`SELECT id, name, format, mime, size, data FROM generated_files WHERE id = $1`, [id]);
+  return rows[0] || null;
+}
+
 export async function getGeneratedFile(userId, id) {
   const { rows } = await pool.query(
     `SELECT id, name, format, mime, size, data FROM generated_files WHERE id = $1 AND user_id = $2`,

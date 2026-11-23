@@ -5,7 +5,7 @@ import dotenv from "dotenv";
 import bcrypt from "bcryptjs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHmac, timingSafeEqual } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import fsp from "node:fs/promises";
 import { signToken, requireAuth } from "./lib/auth.js";
@@ -30,6 +30,9 @@ import { rewriteProjectImages, warmProjectImages, getProjectImage, isProjectImag
 import { extractRequirements, extractRequirementsHeuristic, verifyRequirements, requirementIssues, requirementsPrompt } from "./lib/requirements.js";
 import { progressStream } from "./lib/progressStream.js";
 import { inspectReactProject } from "./lib/reactChecks.js";
+import { buildChecklist, checklistBlock, checklistIssues, checklistSize } from "./lib/requestChecklist.js";
+import { detectCarouselRequest, detectCarouselFormat, isCarouselEdit, CREATE_CAROUSEL_TOOL, carouselPlannerPrompt, normalizeCarouselSpec, inspectCarousel, fallbackCarousel, FORMATS as CAROUSEL_FORMATS } from "./lib/carousel/spec.js";
+import { renderCarousel, measureCarousel, carouselPdf, carouselZip } from "./lib/carousel/render.js";
 import { buildHistory, needsSummary, summaryPrompt, acceptSummary, memoryExtractionPrompt, parseMemoryChanges, shouldExtractMemory, memoryBlock, RECENT_MESSAGES } from "./lib/memory.js";
 import { createFaithfulImage, readImageMeta, isImageEditFollowUp, isReferenceImageRequest } from "./lib/imageFidelity.js";
 import { buildDesignBrief } from "./lib/designDirection.js";
@@ -79,6 +82,7 @@ import {
   getVersionChanges,
   saveGeneratedFile,
   getGeneratedFile,
+  getGeneratedFileUnchecked,
   updateConversationSummary,
   getMemorySettings,
   setMemoryEnabled,
@@ -123,7 +127,7 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"]
   })
 );
-app.use(express.json({ limit: "20mb" }));
+app.use(express.json({ limit: process.env.KIRA_BODY_LIMIT || "40mb" })); // carrossel: várias fotos por mensagem
 
 // Imagens geradas e salvas localmente.
 app.use(
@@ -241,6 +245,19 @@ app.get("/api/files/:id", requireAuth, async (req, res) => {
 
 // KIRA_PROJECT_IMAGES_V1: imagens dos projetos geradas e guardadas pelo servidor.
 // Rota pública (tags <img> não enviam token); só serve IDs registrados pelo próprio servidor.
+// KIRA_CAROUSEL_V1: slides servidos por link assinado (o <img> do chat não manda o token de login).
+app.get("/api/carousel-slides/:id", async (req, res) => {
+  const id = req.params.id;
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(404).end();
+  const expected = Buffer.from(signSlide(id)), given = Buffer.from(String(req.query.s || ""));
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return res.status(403).end();
+  try {
+    const file = await getGeneratedFileUnchecked(id);
+    if (!file || file.format !== "png") return res.status(404).end();
+    res.set({ "Content-Type": "image/png", "Cache-Control": "private, max-age=31536000, immutable", "Content-Disposition": `inline; filename="${file.name.replace(/[^\w.-]/g, "_")}"` });
+    res.end(file.data);
+  } catch (err) { console.warn("[kira-carousel] slide falhou:", err.message); res.status(500).end(); }
+});
 app.get("/api/project-images/:id", async (req,res)=>{
   if(!isProjectImageId(req.params.id)) return res.status(404).end();
   res.set("Cross-Origin-Resource-Policy","cross-origin"); // o preview roda em outra origem
@@ -312,6 +329,8 @@ async function planFileSpec({ format, request, history, groqHistory, lang, curre
   return { spec: null, provider: null };
 }
 
+const specStrings = value => typeof value === "string" ? value : Array.isArray(value) ? value.map(specStrings).join("\n") : value && typeof value === "object" ? Object.entries(value).filter(([k]) => !/^(theme|format|currency|layout|type|tone|imagePrompt)$/.test(k)).map(([, v]) => specStrings(v)).join("\n") : "";
+
 async function createKiraFile({ format, request, history = [], groqHistory = [], userId, step = () => {}, presetSpec = null, langHint = null }) {
   const label = FILE_FORMATS[format].label;
   // KIRA_FILES_LANG_V1: idioma do pedido (ou do áudio) decide o idioma do arquivo.
@@ -328,7 +347,10 @@ async function createKiraFile({ format, request, history = [], groqHistory = [],
 
   // KIRA_FILES_QUALITY_V1: confere contra o pedido e corrige antes de montar o arquivo.
   let spec = normalizeFileSpec(raw, format, { lang, currency });
-  let issues = inspectFileSpec(spec, request, { lang, requirements });
+  // KIRA_CHECKLIST_V1: textos exatos, @, links e proibições do pedido conferidos no conteúdo do arquivo.
+  const fileChecklist = buildChecklist(request);
+  const inspectAll = s => [...new Set([...inspectFileSpec(s, request, { lang, requirements }), ...checklistIssues(specStrings(s), { ...fileChecklist, quantities: [] })])];
+  let issues = inspectAll(spec);
   step("file-plan", "Conteúdo planejado", `${spec.title} · ${issues.length ? `${issues.length} ponto(s) a ajustar` : "conferido"}`, "done");
   console.info(`[kira-file] attempt=1 provider=${provider} lang=${lang} issues=${issues.length}${issues.length ? ` first="${issues[0].slice(0, 90)}"` : ""}`);
 
@@ -337,7 +359,7 @@ async function createKiraFile({ format, request, history = [], groqHistory = [],
     const retry = await planFileSpec({ format, request, history, groqHistory, lang, currency, requirements, issues, previous: { title: spec.title, slides: spec.slides, sheets: spec.sheets.map(s => ({ ...s, rows: s.rows.slice(0, 40) })), blocks: spec.blocks } });
     if (!retry.spec) break;
     const candidate = normalizeFileSpec(retry.spec, format, { lang, currency });
-    const candidateIssues = inspectFileSpec(candidate, request, { lang, requirements });
+    const candidateIssues = inspectAll(candidate);
     console.info(`[kira-file] attempt=${attempt} provider=${retry.provider} issues=${candidateIssues.length}`);
     step(`file-fix-${attempt}`, `Revisão ${attempt - 1} concluída`, candidateIssues.length ? `${candidateIssues.length} ponto(s) restante(s)` : "tudo conferido", "done");
     if (candidateIssues.length <= issues.length) { raw = retry.spec; spec = candidate; issues = candidateIssues; provider = retry.provider; }
@@ -362,6 +384,171 @@ async function createKiraFile({ format, request, history = [], groqHistory = [],
   console.info(`[kira-file] format=${format} provider=${provider} lang=${lang} size=${saved.size} summary="${rendered.summary}" remaining_issues=${issues.length}`);
   const file = { id: saved.id, name: saved.name, format, label, size: saved.size, summary: rendered.summary, title: rendered.spec.title, theme: rendered.spec.theme, lang };
   return { file, provider, reply: (FILE_REPLY[lang] || FILE_REPLY.pt)(rendered.spec.title, label, rendered.summary) };
+}
+
+// ---------- KIRA_CAROUSEL_V1 ----------
+const CAROUSEL_SECRET = process.env.JWT_SECRET || "kira-dev-carousel";
+const signSlide = id => createHmac("sha256", CAROUSEL_SECRET).update(`slide:${id}`).digest("base64url").slice(0, 22);
+const slideUrl = id => `/api/carousel-slides/${id}?s=${signSlide(id)}`;
+const CAROUSEL_MAX_IMAGES = Math.max(0, Math.min(10, Number(process.env.KIRA_CAROUSEL_MAX_IMAGES || 5)));
+const CAROUSEL_REPLY = {
+  pt: (n, size, notes) => `Pronto! Seu carrossel tem **${n} slides** (${size}). Deslize para ver cada um; você pode baixar as imagens (ZIP) ou o PDF para o LinkedIn, e a legenda já está pronta para copiar.${notes}\n\nQuer mudar algo? É só dizer, por exemplo: "troca o título do slide 2" ou "usa esta foto na capa".`,
+  es: (n, size, notes) => `¡Listo! Tu carrusel tiene **${n} diapositivas** (${size}). Desliza para ver cada una; puedes descargar las imágenes (ZIP) o el PDF para LinkedIn, y el texto del post ya está listo para copiar.${notes}\n\n¿Quieres cambiar algo? Solo dime, por ejemplo: "cambia el título de la diapositiva 2" o "usa esta foto en la portada".`,
+  en: (n, size, notes) => `Done! Your carousel has **${n} slides** (${size}). Swipe through them; you can download the images (ZIP) or the PDF for LinkedIn, and the caption is ready to copy.${notes}\n\nWant changes? Just say, e.g. "change the title on slide 2" or "use this photo on the cover".`
+};
+
+async function planCarousel({ prompt, userImages, imageOffset = 0, history, groqHistory }) {
+  const imageParts = userImages.flatMap((img, i) => [{ text: `IMAGEM DO USUÁRIO ${imageOffset + i + 1}:` }, { inlineData: { mimeType: img.mimeType || "image/jpeg", data: img.data } }]);
+  for (const model of FILE_MODELS) {
+    try {
+      const data = await callGemini({ systemInstruction: systemPrompt(), contents: [...history.slice(-6), { role: "user", parts: [{ text: prompt }, ...imageParts] }],
+        tools: [{ functionDeclarations: [CREATE_CAROUSEL_TOOL] }], forceFunctionName: "create_carousel", model });
+      const args = (data?.candidates?.[0]?.content?.parts || []).find(p => p.functionCall?.name === "create_carousel")?.functionCall?.args;
+      if (args) return { spec: args, provider: `gemini:${data._kiraModel || model || GEMINI_MODEL}` };
+    } catch (error) { console.warn(`[kira-carousel] planejamento gemini falhou:`, error.status || error.message); }
+  }
+  if (GROQ_ENABLED) {
+    let model = "groq";
+    try {
+      const text = await callGroqJson({
+        systemInstruction: `${systemPrompt()}\nResponda SOMENTE com um objeto JSON válido.`,
+        message: `${prompt}${userImages.length ? `\n(As ${userImages.length} imagens do usuário não estão visíveis para você: distribua-as pela ordem, capa primeiro.)` : ""}\n\nResponda com UM objeto JSON neste formato:\n{"title":"...","style":"editorial|bold|minimal|dark|gradient","fonts":"classic|modern|tech|elegant","palette":{"background":"#rrggbb","text":"#rrggbb","muted":"#rrggbb","accent":"#rrggbb"},"imageStyle":"...","handle":"","caption":"...","hashtags":["..."],"slides":[{"kind":"cover|content|list|stat|quote|image|cta","kicker":"...","title":"...","body":"...","bullets":["..."],"statValue":"","statLabel":"","quote":"","author":"","imageSource":"none|generate|user","userImage":1,"imagePrompt":"...","imagePlacement":"full|top|background|none"}]}`,
+        history: groqHistory, onSelectedModel: m => { model = `groq:${m}`; }
+      });
+      const spec = parseLooseJson(text);
+      if (spec) return { spec, provider: model };
+    } catch (error) { console.warn("[kira-carousel] planejamento groq falhou:", error.status || error.message); }
+  }
+  return { spec: null, provider: null };
+}
+
+async function readGeneratedImage(url) {
+  const file = path.join(__dirname, "generated-images", path.basename(url));
+  const bytes = await fsp.readFile(file);
+  fsp.unlink(file).catch(() => {});
+  return bytes;
+}
+
+async function createKiraCarousel({ request, userImages = [], format = "portrait", previous = null, history = [], groqHistory = [], userId, step = () => {}, checklist = null, langHint = null }) {
+  const prevSpec = previous?.carousel?.spec || null;
+  const explicitLang = checklist?.language?.code;
+  const lang = explicitLang || (prevSpec?.lang && !userImages.length && request.length < 200 ? prevSpec.lang : detectLanguage(request, WHISPER_LANG[String(langHint || "").toLowerCase()] || prevSpec?.lang || "pt"));
+  const fmt = prevSpec && !/\b(story|stories|quadrad|cuadrad|square|1:1|9:16|4:5)\b/i.test(request) ? prevSpec.format : (format || detectCarouselFormat(request));
+  const checklistText = checklistBlock(checklist);
+  const maxAttempts = Math.max(1, Math.min(4, Number(process.env.KIRA_CAROUSEL_MAX_ATTEMPTS || 3)));
+  // Edição: fotos do usuário que já estão no carrossel continuam numeradas 1..N; as novas vêm depois.
+  const prevUserAssets = new Map((prevSpec?.slides || []).filter(s => s.imageSource === "user" && s.userImage && s.assetId).map(s => [s.userImage, s.assetId]));
+  const existingUserImages = prevUserAssets.size ? Math.max(...prevUserAssets.keys()) : 0;
+  const userImageCount = existingUserImages + userImages.length;
+  const mustUse = Array.from({ length: userImages.length }, (_, k) => existingUserImages + k + 1);
+  const newUserImage = n => n > existingUserImages ? userImages[n - existingUserImages - 1] : null;
+  const size = CAROUSEL_FORMATS[fmt].label;
+
+  // 1. Plano (com fotos do usuário visíveis para o modelo) + conferência contra cada item do pedido.
+  step("carousel-plan", prevSpec ? "Aplicando sua alteração no carrossel" : "Planejando o carrossel", `${size}${userImageCount ? ` · ${userImageCount} foto(s) sua(s)` : ""}`);
+  const previousForPrompt = prevSpec ? { ...prevSpec, slides: prevSpec.slides.map(({ assetId, ...rest }) => rest) } : null;
+  let raw = null, provider = null, spec = null, issues = [];
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const draft = attempt > 1 && spec ? { ...spec, slides: spec.slides.map(({ assetId, ...rest }) => rest) } : null;
+    const prompt = carouselPlannerPrompt(request, { lang, format: fmt, checklistText, userImages: userImageCount, existingUserImages, previous: prevSpec && !draft ? previousForPrompt : null, draft, issues, maxImages: CAROUSEL_MAX_IMAGES });
+    const planned = await planCarousel({ prompt, userImages, imageOffset: existingUserImages, history, groqHistory });
+    if (!planned.spec) { if (attempt === 1 && !prevSpec) { raw = fallbackCarousel(request, { lang }); provider = "fallback"; } break; }
+    const candidate = normalizeCarouselSpec(planned.spec, { format: fmt, lang, checklist, userImages: userImageCount, mustUse, maxImages: CAROUSEL_MAX_IMAGES });
+    const candidateIssues = inspectCarousel(candidate, { checklist, detectLang: detectLanguage, lang, userImages: prevSpec ? userImages.length && userImageCount : userImageCount, overflow: measureCarousel(candidate) });
+    console.info(`[kira-carousel] attempt=${attempt} provider=${planned.provider} slides=${candidate.slides.length} issues=${candidateIssues.length}${candidateIssues.length ? ` first="${candidateIssues[0].slice(0, 100)}"` : ""}`);
+    if (!spec || candidateIssues.length <= issues.length) { raw = planned.spec; spec = candidate; issues = candidateIssues; provider = planned.provider; }
+    if (!issues.length) break;
+    step(`carousel-fix-${attempt}`, `Conferindo o pedido · ${issues.length} ponto(s) a ajustar`, issues[0].slice(0, 110), attempt === maxAttempts ? "done" : undefined);
+  }
+  if (!spec) {
+    if (!raw) { const e = new Error("Não consegui planejar o carrossel agora."); e.status = 503; throw e; }
+    spec = normalizeCarouselSpec(raw, { format: fmt, lang, checklist, userImages: userImageCount, mustUse, maxImages: CAROUSEL_MAX_IMAGES });
+  }
+  step("carousel-plan", "Roteiro do carrossel pronto", `${spec.slides.length} slides · ${issues.length ? `${issues.length} ponto(s) não resolvido(s)` : "tudo conferido com o pedido"}`, "done");
+
+  // 2. Imagens: fotos do usuário, imagens já existentes (edição) ou novas no Cloudflare.
+  if (prevSpec) {
+    for (const [i, s] of spec.slides.entries()) {
+      const old = prevSpec.slides[i];
+      if (!s.assetId && old?.assetId && s.imageSource === "generate" && old.imageSource === "generate" && s.imagePrompt === old.imagePrompt) s.assetId = old.assetId;
+      if (s.imageSource === "user" && prevUserAssets.has(s.userImage)) s.assetId = prevUserAssets.get(s.userImage);
+    }
+  }
+  const buffers = new Map();
+  const notes = [];
+  const toGenerate = [];
+  for (const [i, s] of spec.slides.entries()) {
+    if (s.imageSource === "none") continue;
+    if (s.assetId) {
+      const asset = await getGeneratedFile(userId, s.assetId).catch(() => null);
+      if (asset) { buffers.set(i, asset.data); continue; }
+      s.assetId = null;
+    }
+    const attached = s.imageSource === "user" ? (prevSpec ? newUserImage(s.userImage) : userImages[s.userImage - 1]) : null;
+    if (attached) {
+      const bytes = Buffer.from(attached.data, "base64");
+      buffers.set(i, bytes);
+      const saved = await saveGeneratedFile(userId, { id: randomUUID(), name: `foto-${i + 1}.img`, format: "asset", mime: attached.mimeType || "image/jpeg", buffer: bytes, summary: "foto do usuário (carrossel)" });
+      s.assetId = saved.id;
+    } else if (s.imageSource === "generate") toGenerate.push(i);
+    else { s.imageSource = "none"; s.imagePlacement = "none"; }
+  }
+  if (toGenerate.length) {
+    step("carousel-images", `Criando ${toGenerate.length} imagem(ns) para o carrossel`, "mesma direção de arte em todas");
+    let done = 0;
+    const queue = [...toGenerate];
+    const worker = async () => {
+      while (queue.length) {
+        const i = queue.shift(), s = spec.slides[i];
+        const full = s.imagePlacement !== "top";
+        const layout = full ? (fmt === "square" ? { width: 1024, height: 1024, name: "square" } : { width: 896, height: fmt === "story" ? 1536 : 1152, name: "vertical" }) : { width: 1216, height: 768, name: "horizontal" };
+        const prompt = `${s.imagePrompt}. ${spec.imageStyle ? `Art direction: ${spec.imageStyle}. ` : ""}${full ? "Leave calm, darker negative space in the lower third for overlaid text. " : ""}Professional, high detail, editorial quality, no text, no letters, no logos, no watermark.`;
+        try {
+          const bytes = await readGeneratedImage(await generateKiraImage(prompt, { plannedPrompt: prompt, layout }));
+          buffers.set(i, bytes);
+          const saved = await saveGeneratedFile(userId, { id: randomUUID(), name: `imagem-${i + 1}.jpg`, format: "asset", mime: "image/jpeg", buffer: bytes, summary: s.imagePrompt.slice(0, 200) });
+          s.assetId = saved.id;
+        } catch (error) {
+          console.warn(`[kira-carousel] imagem do slide ${i + 1} falhou:`, error.message);
+          if (error.quota) notes.push("quota");
+          s.imageSource = "none"; s.imagePlacement = "none";
+        }
+        step("carousel-images", `Imagens do carrossel · ${++done}/${toGenerate.length}`, "", done === toGenerate.length ? "done" : undefined);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, toGenerate.length) }, worker));
+  }
+
+  // 3. Desenho, PDF e ZIP.
+  step("carousel-render", "Diagramando os slides", `${spec.slides.length} × ${size}`);
+  const rendered = await renderCarousel(spec, buffers);
+  const slug = (spec.title || "carrossel").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "carrossel";
+  const [pdf, zip] = await Promise.all([
+    carouselPdf(rendered.slides, { width: rendered.width, height: rendered.height, title: spec.title }),
+    carouselZip(rendered.slides, { slug, caption: spec.caption, hashtags: spec.hashtags })
+  ]);
+  const slides = [];
+  for (const [i, png] of rendered.slides.entries()) {
+    const saved = await saveGeneratedFile(userId, { id: randomUUID(), name: `${slug}-${String(i + 1).padStart(2, "0")}.png`, format: "png", mime: "image/png", buffer: png, summary: `slide ${i + 1}` });
+    slides.push({ id: saved.id, url: slideUrl(saved.id), name: saved.name });
+  }
+  const savedPdf = await saveGeneratedFile(userId, { id: randomUUID(), name: `${slug}.pdf`, format: "pdf", mime: "application/pdf", buffer: pdf, summary: `Carrossel em PDF · ${spec.slides.length} páginas` });
+  const summary = `${spec.slides.length} slides · ${size}`;
+  const savedZip = await saveGeneratedFile(userId, { id: randomUUID(), name: `${slug}.zip`, format: "zip", mime: "application/zip", buffer: zip, summary });
+  step("carousel-render", "Carrossel pronto", summary, "done");
+  console.info(`[kira-carousel] done provider=${provider} slides=${spec.slides.length} format=${fmt} user_images=${userImageCount} generated=${toGenerate.length} remaining_issues=${issues.length} overflow=${rendered.overflow.length}`);
+
+  const L = ["pt", "es", "en"].includes(lang) ? lang : "pt";
+  let extra = "";
+  if (notes.includes("quota")) extra += { pt: "\n\nA cota diária de imagens do Cloudflare acabou, então alguns slides ficaram só com design tipográfico. Depois das 21h (Brasília) posso gerar as fotos que faltam.", es: "\n\nSe agotó la cuota diaria de imágenes, así que algunas diapositivas quedaron solo con diseño tipográfico. Más tarde puedo generar las fotos que faltan.", en: "\n\nThe daily image quota ran out, so some slides use typography only. I can add the missing photos later." }[L];
+  else if (toGenerate.length && spec.slides.filter(s => s.imageSource === "generate").length < toGenerate.length) extra += { pt: "\n\nAlgumas imagens não puderam ser geradas agora; esses slides ficaram só com design tipográfico.", es: "\n\nAlgunas imágenes no se pudieron generar ahora; esas diapositivas quedaron solo con diseño tipográfico.", en: "\n\nSome images couldn't be generated right now; those slides use typography only." }[L];
+  if (issues.length) extra += { pt: `\n\nConferi o pedido item por item e isto pode não ter saído exatamente como você pediu: ${issues.slice(0, 3).join("; ")}.`, es: `\n\nRevisé el pedido punto por punto y esto puede no haber quedado exactamente como pediste: ${issues.slice(0, 3).join("; ")}.`, en: `\n\nI checked the request item by item and this may not match exactly: ${issues.slice(0, 3).join("; ")}.` }[L];
+
+  const file = {
+    id: savedZip.id, name: savedZip.name, format: "carousel", label: "Carrossel", size: savedZip.size, summary, title: spec.title, lang,
+    carousel: { width: rendered.width, height: rendered.height, slides, pdf: { id: savedPdf.id, name: savedPdf.name, size: savedPdf.size }, caption: spec.caption, hashtags: spec.hashtags, spec }
+  };
+  return { file, provider, reply: CAROUSEL_REPLY[L](spec.slides.length, size, extra) };
 }
 
 // KIRA_DEVELOPER_FIX_PASS_V1: prompt de correção cirúrgica (só arquivos com problema + requisitos faltantes).
@@ -459,8 +646,9 @@ const VISUAL_REFERENCE_NOTE = `REFERÊNCIA VISUAL ANEXADA: a imagem a seguir é 
 // KIRA_MEMORY_V1: memória do usuário + resumo da conversa entram no prompt de TODA chamada desta requisição.
 const requestMemory = new AsyncLocalStorage();
 function systemPrompt() {
-  const memory = requestMemory.getStore()?.memory;
-  return `${SYSTEM_PROMPT_BASE}\n${currentDateLine()}${memory ? `\n\n${memory}` : ""}`;
+  const store = requestMemory.getStore();
+  const memory = store?.memory, checklist = store?.checklist;
+  return `${SYSTEM_PROMPT_BASE}\n${currentDateLine()}${memory ? `\n\n${memory}` : ""}${checklist ? `\n\n${checklist}` : ""}`;
 }
 
 const CURRENT_TERMS_VERSION = "2026-10-04-v1";
@@ -793,12 +981,16 @@ function kiraWantsGeneratedImage(value) {
 
 app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
   const step = req.progress; // KIRA_PROGRESS_STREAM_V1: fases visíveis no chat
-  requestMemory.enterWith({ memory: "" });
+  requestMemory.enterWith({ memory: "", checklist: "" });
   let voiceInfo = null; // KIRA_AUDIO_FIDELITY_V1: o que a Kira ouviu e o pedido usado
   const chatStartedAt = Date.now();
   res.once("finish", () => console.info(`[kira-chat] status=${res.statusCode} duration_ms=${Date.now()-chatStartedAt}`));
   try {
-    const { message, conversationId, image, audio, artifactId } = req.body;
+    const { message, conversationId, image, audio, artifactId, images } = req.body;
+    // KIRA_CAROUSEL_V1: várias fotos por mensagem (a primeira continua valendo como "image" para os outros fluxos).
+    const attachedImages = (Array.isArray(images) ? images : image?.data ? [image] : [])
+      .filter(img => img && typeof img.data === "string" && img.data.length > 100 && /^image\/(jpeg|png|webp|gif)$/i.test(img.mimeType || "image/jpeg"))
+      .slice(0, Number(process.env.KIRA_MAX_IMAGES_PER_MESSAGE || 10));
     if ((!message || typeof message !== "string") && !image && !audio) {
       return res.status(400).json({ error: "Envie uma mensagem, uma imagem ou um áudio." });
     }
@@ -866,18 +1058,28 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
     const mentioned = message ? await findProjectMention(req.user.id, message) : null;
     const resolvedArtifactId = artifactId || mentioned?.id || active?.artifactId || null;
     const existingArtifact = resolvedArtifactId ? await getArtifact(req.user.id, resolvedArtifactId) : null;
+    // KIRA_CHECKLIST_V1: cada palavra do pedido vira item obrigatório no prompt de todas as chamadas desta requisição.
+    const requestChecklist = buildChecklist(textMessage);
+    requestMemory.getStore().checklist = checklistBlock(requestChecklist);
+    if (checklistSize(requestChecklist)) console.info(`[kira-checklist] items=${checklistSize(requestChecklist)} exact=${requestChecklist.exact.length} qty=${requestChecklist.quantities.length} forbidden=${requestChecklist.forbidden.length}`);
     const {kind: rawIntentKind, editingArtifact: rawEditingArtifact, wantsArtifact: rawWantsArtifact} = classifyKiraIntent(textMessage, Boolean(existingArtifact));
     // KIRA_IMAGE_FIDELITY_V1: "agora deixe o céu roxo" logo após uma imagem é ajuste da imagem, não do projeto.
     const recentAssistant = [...(conv.messages || [])].slice(-4).reverse().find(m => m.role === "assistant");
     const previousImageUrl = recentAssistant?.imageUrl || null;
     const imageFollowUp = Boolean(!image?.data && previousImageUrl && isImageEditFollowUp(textMessage));
     const referenceImageEdit = Boolean(image?.data && isReferenceImageRequest(textMessage));
+    // KIRA_CAROUSEL_V1: carrossel novo ou ajuste do último carrossel desta conversa.
+    const previousCarousel = [...(conv.messages || [])].slice(-6).reverse().find(m => m.role === "assistant" && m.file?.format === "carousel")?.file || null;
+    const newCarousel = detectCarouselRequest(textMessage);
+    const carouselEdit = Boolean(previousCarousel?.carousel?.spec && isCarouselEdit(textMessage) &&
+      !(newCarousel && /\b(crie|cria|criar|fa[çc]a|faz|gere|gera|monte|novo|nova|outro|hazme|haz|crea|crear|genera|create|make|new)\b/i.test(textMessage)));
+    const carouselRequest = carouselEdit ? { format: previousCarousel.carousel.spec.format, edit: true } : newCarousel;
     // KIRA_FILES_V1: "crie uma apresentação/planilha/PDF..." gera arquivo para download.
-    const fileRequest = !image?.data && !imageFollowUp ? detectFileRequest(textMessage) : null;
-    const wantsImage = !fileRequest && (imageFollowUp || referenceImageEdit || (!image?.data && kiraWantsGeneratedImage(textMessage)));
-    const editingArtifact = rawEditingArtifact && !imageFollowUp && !fileRequest;
-    const wantsArtifact = rawWantsArtifact && !imageFollowUp && !fileRequest;
-    const intentKind = fileRequest ? "file" : wantsImage ? "image" : rawIntentKind;
+    const fileRequest = !carouselRequest && !image?.data && !imageFollowUp ? detectFileRequest(textMessage) : null;
+    const wantsImage = !carouselRequest && !fileRequest && (imageFollowUp || referenceImageEdit || (!image?.data && kiraWantsGeneratedImage(textMessage)));
+    const editingArtifact = rawEditingArtifact && !imageFollowUp && !fileRequest && !carouselRequest;
+    const wantsArtifact = rawWantsArtifact && !imageFollowUp && !fileRequest && !carouselRequest;
+    const intentKind = carouselRequest ? "carousel" : fileRequest ? "file" : wantsImage ? "image" : rawIntentKind;
     console.info(`[kira-intent] kind=${intentKind}`);
     const complexity = classifyKiraComplexity(textMessage, intentKind);
     console.info(`[kira-complexity] level=${complexity} path=${complexity==="advanced"?"groq-first":complexity==="project"?"workspace":"fast-chat"}`);
@@ -948,6 +1150,23 @@ app.post("/api/chat", requireAuth, progressStream, async (req, res) => {
           reply += `\n\nConferi a imagem e estes detalhes podem não ter saído como você pediu: ${v.missing.slice(0, 4).join("; ")}. Quer que eu tente de novo?`;
         }
         console.info(`[kira-image] fidelity attempts=${result.attempts} score=${v?.score ?? "n/a"} edit=${Boolean(previous)} reference=${Boolean(reference)}`);
+      }
+      if (!reply && carouselRequest) {
+        try {
+          const made = await createKiraCarousel({ request: textMessage, userImages: attachedImages, format: carouselRequest.format, previous: carouselRequest.edit ? previousCarousel : null,
+            history, groqHistory, userId: req.user.id, step, checklist: requestChecklist, langHint: voiceInfo?.language });
+          fileMeta = made.file;
+          reply = made.reply;
+          selectedProvider = made.provider;
+        } catch (carErr) {
+          console.warn("[kira-carousel] criação falhou:", carErr.status || carErr.message);
+          const lang = detectLanguage(textMessage, WHISPER_LANG[String(voiceInfo?.language || "").toLowerCase()] || "pt");
+          step("carousel-render", "Não foi possível montar o carrossel agora", "", "done");
+          reply = { pt: "Não consegui montar o carrossel agora: os serviços de IA estão sobrecarregados. Tente de novo em 1 ou 2 minutos — é só reenviar o pedido (e as fotos, se houver).",
+            es: "No pude armar el carrusel ahora: los servicios de IA están sobrecargados. Inténtalo de nuevo en 1 o 2 minutos; solo reenvía tu pedido (y las fotos, si las hay).",
+            en: "I couldn't build the carousel right now because the AI services are overloaded. Please try again in a minute or two — just resend your request (and photos, if any)." }[lang] || "";
+          selectedProvider = "none";
+        }
       }
       if (!reply && fileRequest) {
         try {

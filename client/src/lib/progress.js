@@ -17,7 +17,7 @@ export function modeFromStep(id, current) {
   if (id === "plan" || /^(render|check)(-\d+)?$/.test(id)) return "image";
   if (id === "look") return "vision";
   if (id === "search" || id === "write") return "search";
-  if (String(id).startsWith("file-")) return "file";
+  if (String(id).startsWith("file-") || String(id).startsWith("carousel-")) return "file";
   if (id === "listen") return "audio";
   return current;
 }

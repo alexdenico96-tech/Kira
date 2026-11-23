@@ -8,6 +8,7 @@ import KiraProgress, { KiraTrace } from "./KiraProgress.jsx";
 import TypewriterMarkdown from "./TypewriterMarkdown.jsx";
 import SourcesBar from "./SourcesBar.jsx";
 import FileCard from "./FileCard.jsx";
+import CarouselCard from "./CarouselCard.jsx";
 import { linkCitations } from "../lib/typewriter.js";
 
 // Fontes vêm na resposta nova (sources) ou do histórico salvo (visitedSites com objetos).
@@ -167,7 +168,7 @@ function AssistantAnswer({ m, onTick, token }) {
       {typed && (
         <SourcesBar sources={sources} queries={m.searchQueries || []} entryPoint={m.searchEntryPoint || ""} />
       )}
-      {typed && m.file && <FileCard file={m.file} token={token} />}
+      {typed && m.file && (m.file.format === "carousel" ? <CarouselCard file={m.file} token={token} /> : <FileCard file={m.file} token={token} />)}
     </>
   );
 }
@@ -205,6 +206,11 @@ export default function MessageThread({
         m.role === "user" ? (
           <div key={i} className="kira-message flex justify-end">
             <div className="max-w-[80%] flex flex-col items-end gap-1.5">
+              {m.previewImages?.length > 0 && (
+                <div className="grid max-w-[300px] grid-cols-3 gap-1.5">
+                  {m.previewImages.map((src, k) => <img key={k} src={src} alt={`Enviada ${k + 1}`} className="aspect-square w-full rounded-lg border border-line object-cover" />)}
+                </div>
+              )}
               {m.previewImage && (
                 <img
                   src={m.previewImage}

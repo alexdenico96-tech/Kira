@@ -8,7 +8,9 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
   const fileInputRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
-  const [pendingImage, setPendingImage] = useState(null);
+  const [pendingImages, setPendingImages] = useState([]);
+  const pendingImage = pendingImages[0] || null;
+  const clearImages = () => setPendingImages(list => { list.forEach(img => img.previewUrl && URL.revokeObjectURL(img.previewUrl)); return []; });
   const [pendingAudio, setPendingAudio] = useState(null);
   const [recording, setRecording] = useState(false);
   const [audioProcessing, setAudioProcessing] = useState(false);
@@ -48,25 +50,47 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     }
   }
 
-  async function handleImageSelect(e) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setError("Escolha um arquivo de imagem.");
-      return;
-    }
+  // KIRA_CAROUSEL_V1: até 10 fotos por mensagem (carrosséis). Fotos grandes são reduzidas para no máx. 2048px.
+  const MAX_IMAGES = 10;
+  async function compress(file) {
+    if (file.size < 1_500_000 && /^image\/(jpeg|png|webp)$/.test(file.type)) return { data: await fileToBase64(file), mimeType: file.type };
     try {
-      const [base64, reference] = await Promise.all([fileToBase64(file), makeReference(file)]);
-      setPendingImage(previous => {
-        if (previous?.previewUrl) URL.revokeObjectURL(previous.previewUrl);
-        return { base64, reference, mimeType: file.type, previewUrl: URL.createObjectURL(file), name: file.name };
-      });
-      setError(null);
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 2048 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
+      canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const blob = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.88));
+      if (blob) return { data: await fileToBase64(blob), mimeType: "image/jpeg" };
+    } catch { /* formato que o navegador não decodifica: manda o original */ }
+    return { data: await fileToBase64(file), mimeType: file.type };
+  }
+
+  async function handleImageSelect(e) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!files.length) return;
+    const images = files.filter(f => f.type.startsWith("image/"));
+    if (!images.length) { setError("Escolha arquivos de imagem."); return; }
+    const room = MAX_IMAGES - pendingImages.length;
+    if (room <= 0) { setError(`Você pode anexar até ${MAX_IMAGES} imagens por mensagem.`); return; }
+    try {
+      const loaded = await Promise.all(images.slice(0, room).map(async (file, k) => {
+        const first = pendingImages.length === 0 && k === 0;
+        const [{ data, mimeType }, reference] = await Promise.all([compress(file), first ? makeReference(file) : null]);
+        return { base64: data, mimeType, reference, previewUrl: URL.createObjectURL(file), name: file.name };
+      }));
+      setPendingImages(list => [...list, ...loaded]);
+      setError(images.length > room ? `Anexei ${room} imagem(ns); o limite é ${MAX_IMAGES} por mensagem.` : null);
     } catch {
       setError("Não foi possível carregar a imagem.");
     }
   }
+
+  const imagePayload = list => list.length ? {
+    image: { data: list[0].base64, mimeType: list[0].mimeType, ...(list[0].reference ? { reference: list[0].reference } : {}) },
+    ...(list.length > 1 ? { images: list.map(img => ({ data: img.base64, mimeType: img.mimeType })) } : {})
+  } : {};
 
   async function toggleRecording() {
     setError(null);
@@ -97,13 +121,12 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
             return;
           }
           const sent = await onSubmit(value.trim(), {
-            image: pendingImage ? { data: pendingImage.base64, mimeType: pendingImage.mimeType, ...(pendingImage.reference ? { reference: pendingImage.reference } : {}) } : undefined,
+            ...imagePayload(pendingImages),
             audio: { data: base64, mimeType: blob.type }
           });
           if (sent) {
-            if (pendingImage?.previewUrl) URL.revokeObjectURL(pendingImage.previewUrl);
             onChange("");
-            setPendingImage(null);
+            clearImages();
             setPendingAudio(previous => {
               if (previous?.previewUrl) URL.revokeObjectURL(previous.previewUrl);
               return null;
@@ -133,19 +156,18 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
     if (loading || recording || audioProcessing) return;
     const text = value.trim();
     if (!text && !pendingImage && !pendingAudio) return;
-    const image = pendingImage;
+    const images = pendingImages;
     const audio = pendingAudio;
     if (audio) setAudioProcessing(true);
     try {
       const sent = await onSubmit(text, {
-        image: image ? { data: image.base64, mimeType: image.mimeType, ...(image.reference ? { reference: image.reference } : {}) } : undefined,
+        ...imagePayload(images),
         audio: audio ? { data: audio.base64, mimeType: audio.mimeType } : undefined,
         audioPreviewUrl: audio?.previewUrl
       });
       if (sent) {
-        if (image?.previewUrl) URL.revokeObjectURL(image.previewUrl);
         onChange("");
-        setPendingImage(null);
+        clearImages();
         setPendingAudio(null);
         setError(null);
       }
@@ -167,12 +189,13 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
       )}
       {(pendingImage || pendingAudio || error) && (
         <div className="mb-3 flex flex-wrap items-center gap-2 px-1">
-          {pendingImage && (
-            <div className="group relative">
-              <img src={pendingImage.previewUrl} alt={pendingImage.name || "Anexo"} className="h-16 w-16 rounded-xl border border-line object-cover" />
-              <button type="button" onClick={() => { URL.revokeObjectURL(pendingImage.previewUrl); setPendingImage(null); }} aria-label="Remover imagem" className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-coral text-ink shadow-lg"><X size={12} /></button>
+          {pendingImages.map((img, k) => (
+            <div key={img.previewUrl} className="group relative">
+              <img src={img.previewUrl} alt={img.name || `Anexo ${k + 1}`} className="h-16 w-16 rounded-xl border border-line object-cover" />
+              {pendingImages.length > 1 && <span className="absolute bottom-1 left-1 rounded-md bg-black/60 px-1.5 text-[10px] font-semibold text-white">{k + 1}</span>}
+              <button type="button" onClick={() => setPendingImages(list => { URL.revokeObjectURL(img.previewUrl); return list.filter(x => x !== img); })} aria-label={`Remover imagem ${k + 1}`} className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-coral text-ink shadow-lg"><X size={12} /></button>
             </div>
-          )}
+          ))}
           {pendingAudio && (
             <div className="flex items-center gap-2">
               <KiraVoiceWave mode="ready" audioUrl={pendingAudio.previewUrl} compact />
@@ -188,8 +211,8 @@ export default function InputBar({ value, onChange, onSubmit, loading, autoFocus
         </div>
         <div className="flex items-center justify-between gap-3 px-3 pb-3 pt-1">
           <div className="flex items-center gap-1">
-            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageSelect} />
-            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={loading || audioProcessing} title="Anexar imagem" aria-label="Anexar imagem" className="flex h-9 w-9 items-center justify-center rounded-xl text-mist hover:bg-panel2 hover:text-paper disabled:opacity-40"><ImagePlus size={19} /></button>
+            <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={handleImageSelect} />
+            <button type="button" onClick={() => fileInputRef.current?.click()} disabled={loading || audioProcessing} title="Anexar imagens (até 10)" aria-label="Anexar imagens" className="flex h-9 w-9 items-center justify-center rounded-xl text-mist hover:bg-panel2 hover:text-paper disabled:opacity-40"><ImagePlus size={19} /></button>
             <button type="button" onClick={toggleRecording} disabled={loading || audioProcessing} title={recording ? "Parar gravação" : "Gravar áudio"} aria-label={recording ? "Parar gravação" : "Gravar áudio"} className={["flex h-9 w-9 items-center justify-center rounded-xl", recording ? "animate-pulse bg-coral/10 text-coral" : "text-mist hover:bg-panel2 hover:text-paper", "disabled:opacity-40"].join(" ")}>
               {recording ? <Square size={17} /> : <Mic size={19} />}
             </button>
