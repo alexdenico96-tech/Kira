@@ -22,5 +22,9 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // KIRA_ANDROID_APP_V1: service worker registrado já no HTML (app instalável / APK).
+      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(function () {});
+    </script>
   </body>
 </html>

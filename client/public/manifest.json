@@ -60,5 +60,31 @@
         }
       ]
     }
-  ]
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshots/inicio-celular.webp",
+      "sizes": "1080x1920",
+      "type": "image/webp",
+      "form_factor": "narrow",
+      "label": "Tela inicial da Kira no celular"
+    },
+    {
+      "src": "/screenshots/carrossel-celular.webp",
+      "sizes": "1080x1920",
+      "type": "image/webp",
+      "form_factor": "narrow",
+      "label": "Carrossel para Instagram criado pela Kira"
+    },
+    {
+      "src": "/screenshots/inicio-computador.webp",
+      "sizes": "1920x1080",
+      "type": "image/webp",
+      "form_factor": "wide",
+      "label": "Kira no computador: converse, pesquise e crie projetos"
+    }
+  ],
+  "launch_handler": {
+    "client_mode": "navigate-existing"
+  }
 }
