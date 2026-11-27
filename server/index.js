@@ -32,6 +32,7 @@ import { progressStream } from "./lib/progressStream.js";
 import { inspectReactProject } from "./lib/reactChecks.js";
 import { inspectProjectIntegrity, repairMissingDependencies, repairRouterFutureFlags, detectDatabaseRequest, databaseProjectPrompt } from "./lib/projectChecks.js";
 import { projectDeliveryMessage } from "./lib/projectDelivery.js";
+import { androidAssetLinks } from "./lib/androidApp.js";
 import { buildChecklist, checklistBlock, checklistIssues, checklistSize } from "./lib/requestChecklist.js";
 import { detectCarouselRequest, detectCarouselFormat, isCarouselEdit, CREATE_CAROUSEL_TOOL, carouselPlannerPrompt, normalizeCarouselSpec, inspectCarousel, fallbackCarousel, FORMATS as CAROUSEL_FORMATS } from "./lib/carousel/spec.js";
 import { renderCarousel, measureCarousel, carouselPdf, carouselZip } from "./lib/carousel/render.js";
@@ -248,6 +249,16 @@ app.get("/api/files/:id", requireAuth, async (req, res) => {
 // KIRA_PROJECT_IMAGES_V1: imagens dos projetos geradas e guardadas pelo servidor.
 // Rota pública (tags <img> não enviam token); só serve IDs registrados pelo próprio servidor.
 // KIRA_CAROUSEL_V1: slides servidos por link assinado (o <img> do chat não manda o token de login).
+// KIRA_ANDROID_APP_V1: Digital Asset Links do app Android (Trusted Web Activity / PWABuilder).
+// Com este arquivo o app abre em tela cheia; sem ele, o Android mostra a barra de endereço.
+// Configure UMA das opções no ambiente do servidor:
+//   ANDROID_ASSETLINKS_JSON = conteúdo do assetlinks.json gerado pelo PWABuilder
+//   ou ANDROID_PACKAGE_NAME + ANDROID_SHA256_FINGERPRINTS (vários separados por vírgula)
+app.get("/.well-known/assetlinks.json", (_req, res) => {
+  res.set({ "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*" });
+  res.type("application/json").send(JSON.stringify(androidAssetLinks()));
+});
+
 app.get("/api/carousel-slides/:id", async (req, res) => {
   const id = req.params.id;
   if (!/^[0-9a-f-]{36}$/i.test(id)) return res.status(404).end();

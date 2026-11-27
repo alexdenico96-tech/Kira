@@ -126,6 +126,16 @@ export default function App() {
     setActiveArtifact(null);
   }
 
+  // KIRA_ANDROID_APP_V1: atalho "Nova conversa" do ícone do app (manifest shortcuts → /?nova=1).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("nova")) return;
+    handleNewConversation();
+    params.delete("nova");
+    const query = params.toString();
+    window.history.replaceState(null, "", window.location.pathname + (query ? `?${query}` : "") + window.location.hash);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function handleDeleteConversation(id) {
     try {
       await deleteConversation(session.token, id);
